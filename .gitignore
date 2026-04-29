@@ -1,0 +1,23 @@
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Local archives/build outputs
+*.zip
+*.tar.gz
+*.tgz
+
+# Dependency/build directories
+node_modules/
+vendor/
+dist/
+build/
+
+# Environment/secrets
+.env
+.env.*

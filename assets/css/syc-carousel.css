@@ -1,0 +1,252 @@
+.syc-carousel {
+	max-width: 100%;
+}
+
+/* Header: titel links, navigatie rechts. */
+.syc-carousel-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 0.75rem;
+}
+
+.syc-header-nav {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+}
+
+.syc-carousel-title {
+	margin: 0;
+	font-size: 1.5rem;
+	font-weight: 600;
+}
+
+.syc-carousel-wrapper {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.5rem;
+}
+
+.syc-nav {
+	border: none;
+	background: #111;
+	color: #fff;
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	font-size: 1.25rem;
+	line-height: 1;
+}
+
+.syc-nav:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.syc-items {
+	display: flex;
+	gap: 0.75rem;
+	overflow-x: auto;
+	scroll-behavior: smooth;
+	padding: 0.25rem 0;
+	align-items: flex-start;
+	-webkit-overflow-scrolling: touch;
+	scrollbar-width: none; /* Firefox */
+	-ms-overflow-style: none; /* IE/Edge legacy */
+}
+
+.syc-items::-webkit-scrollbar {
+	display: none; /* Chrome/Safari */
+}
+
+.syc-item {
+	background: transparent;
+	border: none;
+	padding: 0;
+	cursor: pointer;
+	flex: 0 0 260px;
+	text-align: left;
+	display: flex;
+	flex-direction: column;
+}
+
+.syc-item:hover,
+.syc-item:focus-visible {
+	background: transparent !important;
+}
+
+.syc-media {
+	width: 100%;
+	aspect-ratio: 9 / 16; /* Verticale video/shorts */
+	background: #000 center center / cover no-repeat;
+	border-radius: 4px;
+	overflow: hidden;
+	position: relative;
+}
+
+.syc-img,
+.syc-media iframe {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.syc-media iframe {
+	border: 0;
+}
+
+.syc-play {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	pointer-events: none;
+}
+
+.syc-play::before {
+	content: "";
+	width: 54px;
+	height: 54px;
+	border-radius: 999px;
+	background: rgba(0, 0, 0, 0.55);
+	box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.syc-play::after {
+	content: "";
+	position: absolute;
+	width: 0;
+	height: 0;
+	border-top: 10px solid transparent;
+	border-bottom: 10px solid transparent;
+	border-left: 16px solid rgba(255, 255, 255, 0.92);
+	transform: translateX(2px);
+}
+
+.syc-item.is-playing .syc-play {
+	display: none;
+}
+
+.syc-item-title {
+	margin-top: 0.5rem;
+	color: #000;
+	font-family: Montserrat, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+	font-size: 20px !important;
+	line-height: 1.15 !important;
+	font-weight: 700 !important;
+	text-transform: none;
+}
+
+/* Fullscreen modal voor video */
+.syc-modal {
+	position: fixed;
+	inset: 0;
+	z-index: 9999;
+	display: none;
+}
+
+.syc-modal.is-open {
+	display: block;
+}
+
+.syc-modal-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.82);
+}
+
+.syc-modal-content {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	pointer-events: none;
+}
+
+.syc-modal-inner {
+	position: relative;
+	width: 100%;
+	max-width: 520px;
+	pointer-events: auto;
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	padding: 1.25rem 1.5rem 1.75rem;
+	box-sizing: border-box;
+}
+
+.syc-modal-media {
+	position: relative;
+	width: 100%;
+	aspect-ratio: 9 / 16;
+	background: #000;
+	overflow: hidden;
+	border-radius: 8px;
+}
+
+.syc-modal-media iframe {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	border: 0;
+}
+
+.syc-modal-swipe {
+	position: absolute;
+	inset: 0;
+	z-index: 2;
+	background: transparent;
+}
+
+.syc-modal-title {
+	margin-top: 0.75rem;
+	color: #fff;
+	font-family: Montserrat, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	font-size: 20px;
+	line-height: 1.2;
+	font-weight: 700;
+}
+
+.syc-modal-close {
+	position: absolute;
+	top: 0.75rem;
+	right: 0.9rem;
+	width: 32px;
+	height: 32px;
+	border-radius: 999px;
+	border: none;
+	background: rgba(0, 0, 0, 0.65);
+	color: #fff;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 1.4rem;
+	line-height: 1;
+	z-index: 2;
+}
+
+.syc-modal-open,
+.syc-modal-open body {
+	overflow: hidden;
+}
+
+@media (max-width: 768px) {
+	.syc-carousel-header {
+		align-items: flex-start;
+	}
+
+	.syc-header-nav {
+		margin-top: 0.35rem;
+	}
+}
+
