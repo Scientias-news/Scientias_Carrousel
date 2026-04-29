@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scientias YouTube Carousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.0.0
+ * Version:     1.0.1
  * Author:      Scientias
  * Text Domain: scientias-youtube-carousel
  */
@@ -10,6 +10,10 @@
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
+
+define( 'SYC_VERSION', '1.0.1' );
+define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
+define( 'SYC_API_FEED_CACHE_TTL', 5 * MINUTE_IN_SECONDS );
 
 /**
  * Register custom post type for carousel items.
@@ -109,27 +113,98 @@ function syc_save_video_url_meta( $post_id ) {
 add_action( 'save_post', 'syc_save_video_url_meta' );
 
 /**
+ * Leeg de interne feed-cache en probeer bekende page caches te purgen.
+ */
+function syc_clear_feed_caches() {
+	delete_transient( SYC_API_FEED_CACHE_KEY );
+
+	if ( function_exists( 'sg_cachepress_purge_cache' ) ) {
+		sg_cachepress_purge_cache();
+	}
+
+	if ( function_exists( 'rocket_clean_domain' ) ) {
+		rocket_clean_domain();
+	}
+
+	if ( function_exists( 'w3tc_flush_all' ) ) {
+		w3tc_flush_all();
+	}
+
+	if ( function_exists( 'wp_cache_clear_cache' ) ) {
+		wp_cache_clear_cache();
+	}
+}
+
+/**
+ * Flush caches wanneer handmatige video-items wijzigen.
+ *
+ * @param int     $post_id Post ID.
+ * @param WP_Post $post    Post object.
+ */
+function syc_maybe_clear_manual_video_cache( $post_id, $post ) {
+	if ( ! $post instanceof WP_Post ) {
+		return;
+	}
+
+	if ( 'syc_video' !== $post->post_type ) {
+		return;
+	}
+
+	if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+		return;
+	}
+
+	syc_clear_feed_caches();
+}
+add_action( 'save_post', 'syc_maybe_clear_manual_video_cache', 20, 2 );
+
+/**
+ * Flush caches wanneer handmatige video-items verwijderd of verplaatst worden.
+ *
+ * @param int $post_id Post ID.
+ */
+function syc_maybe_clear_deleted_video_cache( $post_id ) {
+	if ( 'syc_video' === get_post_type( $post_id ) ) {
+		syc_clear_feed_caches();
+	}
+}
+add_action( 'before_delete_post', 'syc_maybe_clear_deleted_video_cache' );
+add_action( 'trashed_post', 'syc_maybe_clear_deleted_video_cache' );
+
+/**
  * Registreer en laad scripts en styles.
  */
 function syc_register_assets() {
-	$version = '1.0.0';
-
 	wp_register_style(
 		'syc-carousel-style',
 		plugin_dir_url( __FILE__ ) . 'assets/css/syc-carousel.css',
 		array(),
-		$version
+		SYC_VERSION
 	);
 
 	wp_register_script(
 		'syc-carousel-script',
 		plugin_dir_url( __FILE__ ) . 'assets/js/syc-carousel.js',
 		array(),
-		$version,
+		SYC_VERSION,
 		true
 	);
 }
 add_action( 'init', 'syc_register_assets' );
+
+/**
+ * Voorkom dat WordPress de block-level carrousel in een alinea wikkelt.
+ *
+ * @param string $content Post content.
+ * @return string
+ */
+function syc_unwrap_shortcode_paragraphs( $content ) {
+	$shortcodes = array( 'scientias_youtube_carousel' );
+	$pattern    = get_shortcode_regex( $shortcodes );
+
+	return preg_replace( '/<p>\s*(' . $pattern . ')\s*<\/p>/s', '$1', $content );
+}
+add_filter( 'the_content', 'syc_unwrap_shortcode_paragraphs', 9 );
 
 /**
  * Registreer instellingen voor YouTube Data API.
@@ -158,11 +233,23 @@ add_action( 'admin_init', 'syc_register_settings' );
  * @return array
  */
 function syc_sanitize_settings( $input ) {
+	$old_settings = wp_parse_args(
+		(array) get_option( 'syc_settings', array() ),
+		array(
+			'api_key'    => '',
+			'channel_id' => '',
+			'max_items'  => 8,
+		)
+	);
 	$output = array();
 
 	$output['api_key']    = isset( $input['api_key'] ) ? trim( sanitize_text_field( $input['api_key'] ) ) : '';
 	$output['channel_id'] = isset( $input['channel_id'] ) ? trim( sanitize_text_field( $input['channel_id'] ) ) : '';
 	$output['max_items']  = isset( $input['max_items'] ) ? max( 1, absint( $input['max_items'] ) ) : 8;
+
+	if ( $old_settings !== $output ) {
+		syc_clear_feed_caches();
+	}
 
 	return $output;
 }
@@ -208,7 +295,7 @@ function syc_render_settings_page() {
 	}
 
 	if ( isset( $_POST['syc_manual_refresh'] ) && check_admin_referer( 'syc_manual_refresh_action', 'syc_manual_refresh_nonce' ) ) {
-		delete_transient( 'syc_api_feed_cache' );
+		syc_clear_feed_caches();
 		$refreshed = true;
 	}
 
@@ -368,6 +455,69 @@ function syc_get_shorts_playlist_id( $channel_id ) {
 }
 
 /**
+ * Bouw een publieke YouTube thumbnail URL als fallback.
+ *
+ * @param string $video_id YouTube video ID.
+ * @return string
+ */
+function syc_get_youtube_thumbnail_url( $video_id ) {
+	$video_id = trim( sanitize_text_field( $video_id ) );
+
+	if ( '' === $video_id ) {
+		return '';
+	}
+
+	return 'https://i.ytimg.com/vi/' . rawurlencode( $video_id ) . '/hqdefault.jpg';
+}
+
+/**
+ * Haal een YouTube video ID uit gangbare YouTube URL-formaten.
+ *
+ * @param string $url Video URL.
+ * @return string
+ */
+function syc_extract_youtube_video_id( $url ) {
+	$url = trim( (string) $url );
+
+	if ( '' === $url ) {
+		return '';
+	}
+
+	$parts = wp_parse_url( $url );
+	if ( empty( $parts['host'] ) ) {
+		return '';
+	}
+
+	$host = strtolower( $parts['host'] );
+	$path = isset( $parts['path'] ) ? trim( $parts['path'], '/' ) : '';
+
+	if ( false !== strpos( $host, 'youtu.be' ) && '' !== $path ) {
+		$segments = explode( '/', $path );
+		return sanitize_text_field( $segments[0] );
+	}
+
+	if ( ! empty( $parts['query'] ) ) {
+		parse_str( $parts['query'], $query );
+		if ( ! empty( $query['v'] ) ) {
+			return sanitize_text_field( $query['v'] );
+		}
+	}
+
+	$segments = '' !== $path ? explode( '/', $path ) : array();
+	$shorts  = array_search( 'shorts', $segments, true );
+	if ( false !== $shorts && ! empty( $segments[ $shorts + 1 ] ) ) {
+		return sanitize_text_field( $segments[ $shorts + 1 ] );
+	}
+
+	$embed = array_search( 'embed', $segments, true );
+	if ( false !== $embed && ! empty( $segments[ $embed + 1 ] ) ) {
+		return sanitize_text_field( $segments[ $embed + 1 ] );
+	}
+
+	return '';
+}
+
+/**
  * Haal Shorts items op via de YouTube Data API.
  *
  * Resultaat wordt gecached in een transient.
@@ -396,7 +546,7 @@ function syc_get_api_shorts_items() {
 		return $error;
 	}
 
-	$cached = get_transient( 'syc_api_feed_cache' );
+	$cached = get_transient( SYC_API_FEED_CACHE_KEY );
 	if ( is_array( $cached ) ) {
 		return $cached;
 	}
@@ -484,6 +634,10 @@ function syc_get_api_shorts_items() {
 			$thumb = $item['snippet']['thumbnails']['medium']['url'];
 		}
 
+		if ( '' === $thumb ) {
+			$thumb = syc_get_youtube_thumbnail_url( $video_id );
+		}
+
 		$items[] = array(
 			'video_id' => $video_id,
 			'title'    => $title,
@@ -505,8 +659,8 @@ function syc_get_api_shorts_items() {
 		return $error;
 	}
 
-	// Cache de items voor 30 minuten.
-	set_transient( 'syc_api_feed_cache', $items, 30 * MINUTE_IN_SECONDS );
+	// Cache kort: YouTube-feeds kunnen na publicatie vertragen en page caches staan hier vaak nog voor.
+	set_transient( SYC_API_FEED_CACHE_KEY, $items, SYC_API_FEED_CACHE_TTL );
 
 	update_option(
 		'syc_api_feed_meta',
@@ -531,7 +685,7 @@ function syc_get_api_shorts_items() {
 function syc_render_carousel_shortcode( $atts ) {
 	$atts = shortcode_atts(
 		array(
-			'title' => '',
+			'title' => __( 'Video', 'scientias-youtube-carousel' ),
 			'limit' => -1,
 		),
 		$atts,
@@ -571,8 +725,8 @@ function syc_render_carousel_shortcode( $atts ) {
 
 	$unique_id = uniqid( 'syc_', false );
 	?>
-	<div class="syc-carousel" id="<?php echo esc_attr( $unique_id ); ?>">
-		<div class="syc-carousel-header">
+	<div class="syc-carousel syc-video-section" id="<?php echo esc_attr( $unique_id ); ?>">
+		<div class="syc-carousel-header syc-section-header">
 			<?php if ( ! empty( $atts['title'] ) ) : ?>
 				<h2 class="syc-carousel-title"><?php echo esc_html( $atts['title'] ); ?></h2>
 			<?php endif; ?>
@@ -583,13 +737,13 @@ function syc_render_carousel_shortcode( $atts ) {
 		</div>
 
 		<div class="syc-carousel-wrapper">
-			<div class="syc-items" role="list">
+			<div class="syc-items" role="list" tabindex="0" aria-label="<?php esc_attr_e( 'Video carrousel', 'scientias-youtube-carousel' ); ?>">
 				<?php if ( $use_api ) : ?>
 					<?php foreach ( $items as $item ) : ?>
 						<?php
 						$video_id  = $item['video_id'];
 						$title     = $item['title'];
-						$thumb_url = $item['thumb'];
+						$thumb_url = ! empty( $item['thumb'] ) ? $item['thumb'] : syc_get_youtube_thumbnail_url( $video_id );
 						$video_url = 'https://www.youtube.com/watch?v=' . $video_id;
 
 						if ( function_exists( 'mb_strlen' ) && function_exists( 'mb_substr' ) ) {
@@ -603,12 +757,16 @@ function syc_render_carousel_shortcode( $atts ) {
 							class="syc-item"
 							data-video-url="<?php echo esc_url( $video_url ); ?>"
 							data-thumb-url="<?php echo esc_url( $thumb_url ? $thumb_url : '' ); ?>"
+							data-title="<?php echo esc_attr( $title ); ?>"
 							role="listitem"
 							aria-label="<?php echo esc_attr( $title ); ?>"
 						>
-							<div class="syc-media" <?php echo $thumb_url ? 'style="background-image:url(' . esc_url( $thumb_url ) . ');"' : ''; ?>>
-								<span class="syc-play" aria-hidden="true"></span>
-							</div>
+						<div class="syc-media" <?php echo $thumb_url ? 'style="background-image:url(' . esc_url( $thumb_url ) . ');"' : ''; ?>>
+							<?php if ( $thumb_url ) : ?>
+								<img class="syc-img" src="<?php echo esc_url( $thumb_url ); ?>" alt="" loading="lazy" decoding="async" />
+							<?php endif; ?>
+							<span class="syc-play" aria-hidden="true"></span>
+						</div>
 							<div class="syc-item-title"><?php echo esc_html( $display_title ); ?></div>
 						</button>
 					<?php endforeach; ?>
@@ -623,6 +781,10 @@ function syc_render_carousel_shortcode( $atts ) {
 						}
 
 						$thumb_url = get_the_post_thumbnail_url( get_the_ID(), 'large' );
+						if ( ! $thumb_url ) {
+							$video_id = syc_extract_youtube_video_id( $video_url );
+							$thumb_url = syc_get_youtube_thumbnail_url( $video_id );
+						}
 
 						$title        = get_the_title();
 						if ( function_exists( 'mb_strlen' ) && function_exists( 'mb_substr' ) ) {
@@ -636,12 +798,16 @@ function syc_render_carousel_shortcode( $atts ) {
 							class="syc-item"
 							data-video-url="<?php echo esc_url( $video_url ); ?>"
 							data-thumb-url="<?php echo esc_url( $thumb_url ? $thumb_url : '' ); ?>"
+							data-title="<?php echo esc_attr( $title ); ?>"
 							role="listitem"
 							aria-label="<?php echo esc_attr( $title ); ?>"
 						>
-							<div class="syc-media" <?php echo $thumb_url ? 'style="background-image:url(' . esc_url( $thumb_url ) . ');"' : ''; ?>>
-								<span class="syc-play" aria-hidden="true"></span>
-							</div>
+						<div class="syc-media" <?php echo $thumb_url ? 'style="background-image:url(' . esc_url( $thumb_url ) . ');"' : ''; ?>>
+							<?php if ( $thumb_url ) : ?>
+								<img class="syc-img" src="<?php echo esc_url( $thumb_url ); ?>" alt="" loading="lazy" decoding="async" />
+							<?php endif; ?>
+							<span class="syc-play" aria-hidden="true"></span>
+						</div>
 							<div class="syc-item-title"><?php echo esc_html( $display_title ); ?></div>
 						</button>
 						<?php
@@ -657,4 +823,3 @@ function syc_render_carousel_shortcode( $atts ) {
 	return ob_get_clean();
 }
 add_shortcode( 'scientias_youtube_carousel', 'syc_render_carousel_shortcode' );
-

@@ -51,6 +51,64 @@
 		return iframe;
 	}
 
+	function attachSwipeHandlers(target) {
+		if (!target || target.dataset.sycSwipeReady === '1') {
+			return;
+		}
+
+		target.dataset.sycSwipeReady = '1';
+
+		var startY = 0;
+		var startX = 0;
+		var tracking = false;
+		var edgeStart = false;
+
+		target.addEventListener(
+			'touchstart',
+			function (e) {
+				if (e.target && e.target.closest('.syc-modal-close, .syc-modal-nav, iframe')) {
+					return;
+				}
+
+				if (!e.touches || e.touches.length !== 1) {
+					return;
+				}
+				tracking = true;
+				startY = e.touches[0].clientY;
+				startX = e.touches[0].clientX;
+				edgeStart = startY < 120 || startY > window.innerHeight - 120;
+			},
+			{ passive: true }
+		);
+
+		target.addEventListener(
+			'touchend',
+			function (e) {
+				if (!tracking) {
+					return;
+				}
+				tracking = false;
+				if (!e.changedTouches || !e.changedTouches.length) {
+					return;
+				}
+
+				var dx = e.changedTouches[0].clientX - startX;
+				var dy = e.changedTouches[0].clientY - startY;
+
+				if (!edgeStart || Math.abs(dy) < 35 || Math.abs(dy) < Math.abs(dx)) {
+					return;
+				}
+
+				if (dy < 0) {
+					showRelativeItem(1);
+				} else {
+					showRelativeItem(-1);
+				}
+			},
+			{ passive: true }
+		);
+	}
+
 	// Gedeelde modal state.
 	var modal;
 	var modalMedia;
@@ -73,6 +131,10 @@
 			'<div class="syc-modal-backdrop"></div>' +
 			'<div class="syc-modal-content" role="dialog" aria-modal="true">' +
 			'  <button type="button" class="syc-modal-close" aria-label="Sluit video">&times;</button>' +
+			'  <button type="button" class="syc-modal-nav syc-modal-prev" aria-label="Vorige video">&lsaquo;</button>' +
+			'  <button type="button" class="syc-modal-nav syc-modal-next" aria-label="Volgende video">&rsaquo;</button>' +
+			'  <button type="button" class="syc-modal-edge syc-modal-edge-prev" aria-label="Vorige video"></button>' +
+			'  <button type="button" class="syc-modal-edge syc-modal-edge-next" aria-label="Volgende video"></button>' +
 			'  <div class="syc-modal-inner">' +
 			'    <div class="syc-modal-media"></div>' +
 			'    <div class="syc-modal-title"></div>' +
@@ -85,13 +147,13 @@
 		modalTitle = modal.querySelector('.syc-modal-title');
 
 		var closeBtn = modal.querySelector('.syc-modal-close');
+		var prevBtn = modal.querySelector('.syc-modal-prev');
+		var nextBtn = modal.querySelector('.syc-modal-next');
+		var edgePrev = modal.querySelector('.syc-modal-edge-prev');
+		var edgeNext = modal.querySelector('.syc-modal-edge-next');
 		var backdrop = modal.querySelector('.syc-modal-backdrop');
-		var inner = modal.querySelector('.syc-modal-inner');
 
-		// Overlaylaag boven de video om verticale swipes op te vangen.
-		var swipeLayer = document.createElement('div');
-		swipeLayer.className = 'syc-modal-swipe';
-		modalMedia.appendChild(swipeLayer);
+		attachSwipeHandlers(modal);
 
 		function closeModal() {
 			if (!modal.classList.contains('is-open')) {
@@ -106,6 +168,22 @@
 		}
 
 		closeBtn.addEventListener('click', closeModal);
+		closeBtn.addEventListener('touchend', function (e) {
+			e.preventDefault();
+			closeModal();
+		});
+		prevBtn.addEventListener('click', function () {
+			showRelativeItem(-1);
+		});
+		nextBtn.addEventListener('click', function () {
+			showRelativeItem(1);
+		});
+		edgePrev.addEventListener('click', function () {
+			showRelativeItem(-1);
+		});
+		edgeNext.addEventListener('click', function () {
+			showRelativeItem(1);
+		});
 		backdrop.addEventListener('click', closeModal);
 
 		document.addEventListener('keydown', function (e) {
@@ -117,60 +195,14 @@
 				return;
 			}
 
-			if (e.key === 'ArrowUp') {
+			if (e.key === 'ArrowLeft') {
 				e.preventDefault();
 				showRelativeItem(-1);
-			} else if (e.key === 'ArrowDown') {
+			} else if (e.key === 'ArrowRight') {
 				e.preventDefault();
 				showRelativeItem(1);
 			}
 		});
-
-		// Verticale swipe in modal (touch) – swipe buiten de iframe (op titel / randen).
-		var touchStartY = 0;
-		var touchStartX = 0;
-		var tracking = false;
-
-		swipeLayer.addEventListener(
-			'touchstart',
-			function (e) {
-				if (!e.touches || e.touches.length !== 1) {
-					return;
-				}
-				tracking = true;
-				touchStartY = e.touches[0].clientY;
-				touchStartX = e.touches[0].clientX;
-			},
-			{ passive: true }
-		);
-
-		swipeLayer.addEventListener(
-			'touchend',
-			function (e) {
-				if (!tracking) {
-					return;
-				}
-				tracking = false;
-				if (!e.changedTouches || !e.changedTouches.length) {
-					return;
-				}
-				var dy = e.changedTouches[0].clientY - touchStartY;
-				var dx = e.changedTouches[0].clientX - touchStartX;
-
-				if (Math.abs(dy) < 40 || Math.abs(dy) < Math.abs(dx)) {
-					return;
-				}
-
-				if (dy < 0) {
-					// Swipe omhoog -> volgende.
-					showRelativeItem(1);
-				} else {
-					// Swipe omlaag -> vorige.
-					showRelativeItem(-1);
-				}
-			},
-			{ passive: true }
-		);
 
 		// Helper zodat showRelativeItem beschikbaar is.
 		function showRelativeItem(delta) {
@@ -236,6 +268,10 @@
 			return;
 		}
 
+		if (items.length <= 3) {
+			root.classList.add('syc-has-few-items');
+		}
+
 		ensureModal();
 
 		var itemsArray = Array.prototype.slice.call(items);
@@ -259,20 +295,44 @@
 		var next = root.querySelector('.syc-nav-next');
 
 		if (track && prev && next) {
-			var scrollAmount = 260 + 16; // kaartbreedte + marge.
+			function getScrollAmount() {
+				var first = track.querySelector('.syc-item');
+				if (!first) {
+					return Math.max(240, Math.round(track.clientWidth * 0.8));
+				}
+				var styles = window.getComputedStyle(first);
+				return first.offsetWidth + parseFloat(styles.marginRight || 0);
+			}
+
+			function scrollTrack(delta) {
+				var left = delta * getScrollAmount();
+
+				if (typeof track.scrollBy === 'function') {
+					track.scrollBy({
+						left: left,
+						behavior: 'smooth',
+					});
+				} else {
+					track.scrollLeft += left;
+				}
+			}
 
 			prev.addEventListener('click', function () {
-				track.scrollBy({
-					left: -scrollAmount,
-					behavior: 'smooth',
-				});
+				scrollTrack(-1);
 			});
 
 			next.addEventListener('click', function () {
-				track.scrollBy({
-					left: scrollAmount,
-					behavior: 'smooth',
-				});
+				scrollTrack(1);
+			});
+
+			track.addEventListener('keydown', function (e) {
+				if (e.key === 'ArrowLeft') {
+					e.preventDefault();
+					scrollTrack(-1);
+				} else if (e.key === 'ArrowRight') {
+					e.preventDefault();
+					scrollTrack(1);
+				}
 			});
 
 			// Mouse drag (touch heeft native swipe).
@@ -322,6 +382,61 @@
 				window.addEventListener('mouseup', endMouse);
 				el.addEventListener('mouseleave', endMouse);
 			})(track);
+
+			(function enableTouchDragScroll(el) {
+				var startX = 0;
+				var startY = 0;
+				var startScrollLeft = 0;
+				var tracking = false;
+				var horizontal = false;
+
+				el.addEventListener(
+					'touchstart',
+					function (e) {
+						if (!e.touches || e.touches.length !== 1) {
+							return;
+						}
+						tracking = true;
+						horizontal = false;
+						startX = e.touches[0].clientX;
+						startY = e.touches[0].clientY;
+						startScrollLeft = el.scrollLeft;
+					},
+					{ passive: true }
+				);
+
+				el.addEventListener(
+					'touchmove',
+					function (e) {
+						if (!tracking || !e.touches || e.touches.length !== 1) {
+							return;
+						}
+
+						var dx = e.touches[0].clientX - startX;
+						var dy = e.touches[0].clientY - startY;
+
+						if (!horizontal && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+							horizontal = true;
+						}
+
+						if (!horizontal) {
+							return;
+						}
+
+						e.preventDefault();
+						el.scrollLeft = startScrollLeft - dx;
+					},
+					{ passive: false }
+				);
+
+				el.addEventListener(
+					'touchend',
+					function () {
+						tracking = false;
+					},
+					{ passive: true }
+				);
+			})(track);
 		}
 	}
 
@@ -330,4 +445,3 @@
 		Array.prototype.forEach.call(carousels, initCarousel);
 	});
 })();
-
