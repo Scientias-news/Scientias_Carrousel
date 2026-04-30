@@ -95,10 +95,8 @@ function syc_save_video_url_meta( $post_id ) {
 		return;
 	}
 
-	if ( isset( $_POST['post_type'] ) && 'syc_video' === $_POST['post_type'] ) {
-		if ( ! current_user_can( 'edit_post', $post_id ) ) {
-			return;
-		}
+	if ( ! current_user_can( 'edit_post', $post_id ) ) {
+		return;
 	}
 
 	if ( isset( $_POST['syc_video_url'] ) ) {
@@ -322,7 +320,7 @@ function syc_render_settings_page() {
 					</th>
 					<td>
 						<input
-							type="text"
+							type="password"
 							id="syc_settings_api_key"
 							name="syc_settings[api_key]"
 							value="<?php echo esc_attr( $settings['api_key'] ); ?>"
