@@ -265,36 +265,57 @@
 }
 
 .syc-modal-nav {
-	position: absolute;
-	top: 50%;
-	transform: translateY(-50%);
-	z-index: 3;
-	width: 42px;
-	height: 42px;
-	border: 1px solid rgba(255, 255, 255, 0.5);
-	border-radius: 999px;
-	background: rgba(0, 0, 0, 0.55);
-	color: #fff;
-	appearance: none;
-	-webkit-appearance: none;
-	padding: 0;
-	cursor: pointer;
-	font-size: 1.8rem;
-	line-height: 1;
-	pointer-events: auto;
-	touch-action: manipulation;
+	display: none;
 }
 
 .syc-modal-edge {
 	display: none;
 }
 
-.syc-modal-prev {
-	left: max(1rem, calc((100vw - 620px) / 2));
+/* Verticale navigatieknopjes: op desktop én mobiel rechts naast de video. */
+.syc-modal-vert {
+	position: absolute;
+	right: max(0.75rem, calc((100vw - 620px) / 2));
+	width: 42px;
+	height: 42px;
+	border-radius: 50%;
+	border: 1.5px solid rgba(255, 255, 255, 0.45);
+	background: rgba(0, 0, 0, 0.55);
+	appearance: none;
+	-webkit-appearance: none;
+	padding: 0;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	pointer-events: auto;
+	touch-action: manipulation;
+	z-index: 5;
 }
 
-.syc-modal-next {
-	right: max(1rem, calc((100vw - 620px) / 2));
+.syc-modal-vert::before {
+	content: "";
+	display: block;
+	width: 10px;
+	height: 10px;
+	border-top: 2px solid rgba(255, 255, 255, 0.85);
+	border-right: 2px solid rgba(255, 255, 255, 0.85);
+}
+
+.syc-modal-vert-prev {
+	top: calc(50% - 46px);
+}
+
+.syc-modal-vert-prev::before {
+	transform: rotate(-45deg) translateY(2px);
+}
+
+.syc-modal-vert-next {
+	top: calc(50% + 4px);
+}
+
+.syc-modal-vert-next::before {
+	transform: rotate(135deg) translateY(-2px);
 }
 
 .syc-modal-title {
@@ -369,8 +390,19 @@
 		max-height: calc(100vh - 8.5rem);
 	}
 
-	.syc-modal-nav {
-		display: none;
+	/* Mobiel: kleinere knoppen, rechts in de vrijgehouden ruimte naast de video. */
+	.syc-modal-vert {
+		right: 0.3rem;
+		width: 40px;
+		height: 40px;
+	}
+
+	.syc-modal-vert-prev {
+		top: calc(50% - 44px);
+	}
+
+	.syc-modal-vert-next {
+		top: calc(50%);
 	}
 
 	.syc-modal-edge {
@@ -379,7 +411,7 @@
 		left: 1rem;
 		right: 1rem;
 		z-index: 4;
-		height: 72px;
+		height: 88px;
 		appearance: none;
 		-webkit-appearance: none;
 		padding: 0;
@@ -388,6 +420,19 @@
 		cursor: pointer;
 		pointer-events: auto;
 		touch-action: manipulation;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	/* Subtiele swipe-hint: klein streepje in het midden van de zone. */
+	.syc-modal-edge::after {
+		content: "";
+		display: block;
+		width: 36px;
+		height: 4px;
+		border-radius: 2px;
+		background: rgba(255, 255, 255, 0.28);
 	}
 
 	.syc-modal-edge-prev {
@@ -397,4 +442,5 @@
 	.syc-modal-edge-next {
 		bottom: calc(env(safe-area-inset-bottom, 0px) + 1.5rem);
 	}
+
 }

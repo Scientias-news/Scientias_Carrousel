@@ -135,6 +135,8 @@
 			'  <button type="button" class="syc-modal-nav syc-modal-next" aria-label="Volgende video">&rsaquo;</button>' +
 			'  <button type="button" class="syc-modal-edge syc-modal-edge-prev" aria-label="Vorige video"></button>' +
 			'  <button type="button" class="syc-modal-edge syc-modal-edge-next" aria-label="Volgende video"></button>' +
+			'  <button type="button" class="syc-modal-vert syc-modal-vert-prev" aria-label="Vorige video"></button>' +
+			'  <button type="button" class="syc-modal-vert syc-modal-vert-next" aria-label="Volgende video"></button>' +
 			'  <div class="syc-modal-inner">' +
 			'    <div class="syc-modal-media"></div>' +
 			'    <div class="syc-modal-title"></div>' +
@@ -151,6 +153,8 @@
 		var nextBtn = modal.querySelector('.syc-modal-next');
 		var edgePrev = modal.querySelector('.syc-modal-edge-prev');
 		var edgeNext = modal.querySelector('.syc-modal-edge-next');
+		var vertPrev = modal.querySelector('.syc-modal-vert-prev');
+		var vertNext = modal.querySelector('.syc-modal-vert-next');
 		var backdrop = modal.querySelector('.syc-modal-backdrop');
 
 		attachSwipeHandlers(modal);
@@ -184,6 +188,58 @@
 		edgeNext.addEventListener('click', function () {
 			showRelativeItem(1);
 		});
+		vertPrev.addEventListener('click', function () {
+			showRelativeItem(-1);
+		});
+		vertNext.addEventListener('click', function () {
+			showRelativeItem(1);
+		});
+
+		// Swipe omhoog/omlaag op de edge-zones (boven en onder de video).
+		// De iframe onderschept alle aanrakingen op de video zelf, dus we gebruiken
+		// de transparante padding-zones als swipe-target. touchend volgt altijd het
+		// element waar touchstart begon, dus ook als de vinger over de iframe beweegt.
+		(function addEdgeSwipe(btn) {
+			var sy = 0, sx = 0, tracking = false;
+
+			btn.addEventListener('touchstart', function (e) {
+				if (!e.touches || e.touches.length !== 1) { return; }
+				tracking = true;
+				sy = e.touches[0].clientY;
+				sx = e.touches[0].clientX;
+			}, { passive: true });
+
+			btn.addEventListener('touchend', function (e) {
+				if (!tracking) { return; }
+				tracking = false;
+				if (!e.changedTouches || !e.changedTouches.length) { return; }
+				var dx = e.changedTouches[0].clientX - sx;
+				var dy = e.changedTouches[0].clientY - sy;
+				if (Math.abs(dy) < 35 || Math.abs(dy) < Math.abs(dx)) { return; }
+				showRelativeItem(dy < 0 ? 1 : -1);
+			}, { passive: true });
+		}(edgePrev));
+
+		(function addEdgeSwipe(btn) {
+			var sy = 0, sx = 0, tracking = false;
+
+			btn.addEventListener('touchstart', function (e) {
+				if (!e.touches || e.touches.length !== 1) { return; }
+				tracking = true;
+				sy = e.touches[0].clientY;
+				sx = e.touches[0].clientX;
+			}, { passive: true });
+
+			btn.addEventListener('touchend', function (e) {
+				if (!tracking) { return; }
+				tracking = false;
+				if (!e.changedTouches || !e.changedTouches.length) { return; }
+				var dx = e.changedTouches[0].clientX - sx;
+				var dy = e.changedTouches[0].clientY - sy;
+				if (Math.abs(dy) < 35 || Math.abs(dy) < Math.abs(dx)) { return; }
+				showRelativeItem(dy < 0 ? 1 : -1);
+			}, { passive: true });
+		}(edgeNext));
 		backdrop.addEventListener('click', closeModal);
 
 		document.addEventListener('keydown', function (e) {
@@ -195,10 +251,10 @@
 				return;
 			}
 
-			if (e.key === 'ArrowLeft') {
+			if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
 				e.preventDefault();
 				showRelativeItem(-1);
-			} else if (e.key === 'ArrowRight') {
+			} else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
 				e.preventDefault();
 				showRelativeItem(1);
 			}
