@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.7 - 2026-06-15
+
+- Renamed manual fallback entries to `Losse video-items` throughout the admin UI.
+- Added explanatory help text to clarify that loose video items are only used as manual source or fallback when the YouTube API feed is unavailable.
+- Added an admin notice on the loose video items list explaining the relationship between API feed, link overrides, and fallback items.
+- Reordered the YouTube carrousel submenu so `Feed instellingen` and `Link overrides` appear before `Losse video-items`.
+- Added `[scientias_youtube_carrousel]` as the correctly spelled shortcode while keeping `[scientias_youtube_carrousel]` as a compatibility alias.
+
 ## 1.0.6.1 - 2026-06-15
 
 - Fixed the submit button label on the feed settings screen after the Link overrides UX update.
@@ -39,16 +47,16 @@
 - Added an optional custom link URL field for manually managed video items.
 - Kept the default behavior unchanged: without a custom link, clicking the video opens the fullscreen player.
 - When a custom link is set, the title below the video links to that URL while the thumbnail still opens the fullscreen player.
-- Updated carousel markup to avoid nesting links inside buttons.
+- Updated carrousel markup to avoid nesting links inside buttons.
 
 ## 1.0.1 - 2026-04-29
 
-- Added editorial horizontal video carousel styling for desktop and mobile.
+- Added editorial horizontal video carrousel styling for desktop and mobile.
 - Added fullscreen video modal with mobile navigation.
 - Preserved YouTube controls by avoiding overlays on top of the player.
 - Added mobile vertical edge navigation in fullscreen mode.
 - Added thumbnail fallbacks for YouTube videos.
-- Improved shortcode rendering by preventing paragraph wrappers around the carousel.
+- Improved shortcode rendering by preventing paragraph wrappers around the carrousel.
 - Reduced YouTube API feed cache lifetime from 30 minutes to 5 minutes.
 - Added cache clearing hooks for feed setting changes and manual video item updates.
 - Added best-effort purge support for SiteGround Optimizer and common WordPress cache plugins.

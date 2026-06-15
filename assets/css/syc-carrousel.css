@@ -1,4 +1,4 @@
-.syc-carousel {
+.syc-carrousel {
 	max-width: 100%;
 	clear: both;
 }
@@ -12,7 +12,7 @@
 }
 
 /* Header: titel links, navigatie rechts. */
-.syc-carousel-header {
+.syc-carrousel-header {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -33,14 +33,14 @@
 	z-index: 4;
 }
 
-.syc-carousel-title {
+.syc-carrousel-title {
 	margin: 0;
 	font-size: clamp(1.75rem, 3vw, 2.8rem);
 	font-weight: 700;
 	line-height: 1;
 }
 
-.syc-carousel-wrapper {
+.syc-carrousel-wrapper {
 	position: relative;
 	min-width: 0;
 }
@@ -373,7 +373,7 @@
 }
 
 @media (max-width: 768px) {
-	.syc-carousel-header {
+	.syc-carrousel-header {
 		align-items: flex-start;
 	}
 

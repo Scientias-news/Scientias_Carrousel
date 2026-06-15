@@ -17,21 +17,21 @@ jobs:
 
       - name: Prepare plugin directory
         run: |
-          mkdir -p build/scientias-youtube-carousel
+          mkdir -p build/scientias-youtube-carrousel
           rsync -av \
             --exclude='.git' \
             --exclude='.github' \
             --exclude='build' \
             --exclude='*.zip' \
-            ./ build/scientias-youtube-carousel/
+            ./ build/scientias-youtube-carrousel/
 
       - name: Create ZIP
         run: |
           cd build
-          zip -r scientias-youtube-carousel.zip scientias-youtube-carousel
+          zip -r scientias-youtube-carrousel.zip scientias-youtube-carrousel
 
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: scientias-youtube-carousel
-          path: build/scientias-youtube-carousel.zip
+          name: scientias-youtube-carrousel
+          path: build/scientias-youtube-carrousel.zip

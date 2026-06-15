@@ -8,6 +8,11 @@
 
 		try {
 			var u = new URL(url);
+			var host = u.hostname.toLowerCase();
+
+			if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].indexOf(host) === -1) {
+				return null;
+			}
 
 			// ?v=VIDEOID
 			if (u.searchParams.has('v')) {
@@ -15,7 +20,7 @@
 			}
 
 			// youtu.be/VIDEOID
-			if (u.hostname.indexOf('youtu.be') !== -1) {
+			if (host === 'youtu.be') {
 				return u.pathname.replace('/', '');
 			}
 
@@ -36,8 +41,16 @@
 		return null;
 	}
 
+	function sanitizeYouTubeId(id) {
+		if (!id || !/^[A-Za-z0-9_-]{6,20}$/.test(id)) {
+			return null;
+		}
+
+		return id;
+	}
+
 	function createIframe(url) {
-		var id = parseYouTubeId(url);
+		var id = sanitizeYouTubeId(parseYouTubeId(url));
 		if (!id) {
 			return null;
 		}
@@ -314,7 +327,7 @@
 		modal._showRelativeItem(delta);
 	}
 
-	function initCarousel(root) {
+	function initCarrousel(root) {
 		if (!root) {
 			return;
 		}
@@ -497,7 +510,7 @@
 	}
 
 	document.addEventListener('DOMContentLoaded', function () {
-		var carousels = document.querySelectorAll('.syc-carousel');
-		Array.prototype.forEach.call(carousels, initCarousel);
+		var carrousels = document.querySelectorAll('.syc-carrousel');
+		Array.prototype.forEach.call(carrousels, initCarrousel);
 	});
 })();

@@ -1,44 +1,44 @@
 <?php
 /**
- * Plugin Name: Scientias YouTube Carousel
+ * Plugin Name: Scientias YouTube Carrousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.0.6.1
+ * Version:     1.0.7
  * Author:      Scientias
- * Text Domain: scientias-youtube-carousel
+ * Text Domain: scientias-youtube-carrousel
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.0.6.1' );
+define( 'SYC_VERSION', '1.0.7' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
 define( 'SYC_API_FEED_CACHE_TTL', 5 * MINUTE_IN_SECONDS );
 
 /**
- * Register custom post type for carousel items.
+ * Register custom post type for carrousel items.
  */
 function syc_register_video_post_type() {
 	$labels = array(
-		'name'               => __( 'Video items', 'scientias-youtube-carousel' ),
-		'singular_name'      => __( 'Video item', 'scientias-youtube-carousel' ),
-		'add_new'            => __( 'Nieuw video-item', 'scientias-youtube-carousel' ),
-		'add_new_item'       => __( 'Nieuw video-item toevoegen', 'scientias-youtube-carousel' ),
-		'edit_item'          => __( 'Video-item bewerken', 'scientias-youtube-carousel' ),
-		'new_item'           => __( 'Nieuw video-item', 'scientias-youtube-carousel' ),
-		'all_items'          => __( 'Alle video-items', 'scientias-youtube-carousel' ),
-		'view_item'          => __( 'Video-item bekijken', 'scientias-youtube-carousel' ),
-		'search_items'       => __( 'Video-items zoeken', 'scientias-youtube-carousel' ),
-		'not_found'          => __( 'Geen video-items gevonden', 'scientias-youtube-carousel' ),
-		'not_found_in_trash' => __( 'Geen video-items in de prullenbak', 'scientias-youtube-carousel' ),
-		'menu_name'          => __( 'YouTube carrousel', 'scientias-youtube-carousel' ),
+		'name'               => __( 'Losse video-items', 'scientias-youtube-carrousel' ),
+		'singular_name'      => __( 'Los video-item', 'scientias-youtube-carrousel' ),
+		'add_new'            => __( 'Nieuw los video-item', 'scientias-youtube-carrousel' ),
+		'add_new_item'       => __( 'Nieuw los video-item toevoegen', 'scientias-youtube-carrousel' ),
+		'edit_item'          => __( 'Los video-item bewerken', 'scientias-youtube-carrousel' ),
+		'new_item'           => __( 'Nieuw los video-item', 'scientias-youtube-carrousel' ),
+		'all_items'          => __( 'Losse video-items', 'scientias-youtube-carrousel' ),
+		'view_item'          => __( 'Los video-item bekijken', 'scientias-youtube-carrousel' ),
+		'search_items'       => __( 'Losse video-items zoeken', 'scientias-youtube-carrousel' ),
+		'not_found'          => __( 'Geen losse video-items gevonden', 'scientias-youtube-carrousel' ),
+		'not_found_in_trash' => __( 'Geen losse video-items in de prullenbak', 'scientias-youtube-carrousel' ),
+		'menu_name'          => __( 'YouTube carrousel', 'scientias-youtube-carrousel' ),
 	);
 
 	$args = array(
 		'labels'             => $labels,
 		'public'             => false,
 		'show_ui'            => true,
-		'show_in_menu'       => true,
+		'show_in_menu'       => false,
 		'supports'           => array( 'title', 'thumbnail' ),
 		'menu_icon'          => 'dashicons-video-alt3',
 		'show_in_rest'       => false,
@@ -57,7 +57,7 @@ add_action( 'init', 'syc_register_video_post_type' );
 function syc_add_video_meta_box() {
 	add_meta_box(
 		'syc_video_url_meta',
-		__( 'YouTube video-URL', 'scientias-youtube-carousel' ),
+		__( 'YouTube video-URL', 'scientias-youtube-carrousel' ),
 		'syc_render_video_url_meta_box',
 		'syc_video',
 		'normal',
@@ -77,9 +77,10 @@ function syc_render_video_url_meta_box( $post ) {
 	$value      = get_post_meta( $post->ID, '_syc_video_url', true );
 	$link_value = get_post_meta( $post->ID, '_syc_link_url', true );
 
-	echo '<p>' . esc_html__( 'Plak hier de volledige YouTube-URL (bijvoorbeeld een YouTube Short of reguliere video).', 'scientias-youtube-carousel' ) . '</p>';
+	echo '<p><strong>' . esc_html__( 'Let op: losse video-items worden alleen gebruikt als handmatige bron of fallback wanneer de automatische YouTube API-feed geen video\'s oplevert.', 'scientias-youtube-carrousel' ) . '</strong></p>';
+	echo '<p>' . esc_html__( 'Plak hier de volledige YouTube-URL voor dit losse video-item.', 'scientias-youtube-carrousel' ) . '</p>';
 	echo '<input type="url" style="width:100%;" id="syc_video_url" name="syc_video_url" value="' . esc_attr( $value ) . '" placeholder="https://www.youtube.com/watch?v=..." />';
-	echo '<p style="margin-top:1rem;">' . esc_html__( 'Optionele link onder de video. Laat leeg om automatisch naar de YouTube-video te linken.', 'scientias-youtube-carousel' ) . '</p>';
+	echo '<p style="margin-top:1rem;">' . esc_html__( 'Optionele link onder de video. Laat leeg om de titel als gewone tekst te tonen en de thumbnail fullscreen te openen.', 'scientias-youtube-carrousel' ) . '</p>';
 	echo '<input type="url" style="width:100%;" id="syc_link_url" name="syc_link_url" value="' . esc_attr( $link_value ) . '" placeholder="https://www.scientias.nl/..." />';
 }
 
@@ -90,7 +91,8 @@ function syc_render_video_url_meta_box( $post ) {
  * @return void
  */
 function syc_save_video_url_meta( $post_id ) {
-	if ( ! isset( $_POST['syc_video_url_nonce'] ) || ! wp_verify_nonce( $_POST['syc_video_url_nonce'], 'syc_save_video_url' ) ) {
+	$nonce = isset( $_POST['syc_video_url_nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['syc_video_url_nonce'] ) ) : '';
+	if ( ! wp_verify_nonce( $nonce, 'syc_save_video_url' ) ) {
 		return;
 	}
 
@@ -104,7 +106,7 @@ function syc_save_video_url_meta( $post_id ) {
 
 	if ( isset( $_POST['syc_video_url'] ) ) {
 		$url = esc_url_raw( wp_unslash( $_POST['syc_video_url'] ) );
-		if ( ! empty( $url ) ) {
+		if ( ! empty( $url ) && syc_extract_youtube_video_id( $url ) ) {
 			update_post_meta( $post_id, '_syc_video_url', $url );
 		} else {
 			delete_post_meta( $post_id, '_syc_video_url' );
@@ -121,6 +123,26 @@ function syc_save_video_url_meta( $post_id ) {
 	}
 }
 add_action( 'save_post', 'syc_save_video_url_meta' );
+
+/**
+ * Toon uitleg boven de lijst met losse video-items.
+ */
+function syc_render_manual_items_notice() {
+	$screen = get_current_screen();
+
+	if ( ! $screen || 'edit-syc_video' !== $screen->id ) {
+		return;
+	}
+
+	?>
+	<div class="notice notice-info">
+		<p>
+			<?php esc_html_e( 'Losse video-items zijn bedoeld als handmatige bron of fallback. Als de YouTube API-feed correct werkt, toont de carrousel standaard de automatische feed. Gebruik Link overrides om automatische feedvideo\'s aan pagina\'s te koppelen.', 'scientias-youtube-carrousel' ); ?>
+		</p>
+	</div>
+	<?php
+}
+add_action( 'admin_notices', 'syc_render_manual_items_notice' );
 
 /**
  * Leeg de interne feed-cache en probeer bekende page caches te purgen.
@@ -186,15 +208,15 @@ add_action( 'trashed_post', 'syc_maybe_clear_deleted_video_cache' );
  */
 function syc_register_assets() {
 	wp_register_style(
-		'syc-carousel-style',
-		plugin_dir_url( __FILE__ ) . 'assets/css/syc-carousel.css',
+		'syc-carrousel-style',
+		plugin_dir_url( __FILE__ ) . 'assets/css/syc-carrousel.css',
 		array(),
 		SYC_VERSION
 	);
 
 	wp_register_script(
-		'syc-carousel-script',
-		plugin_dir_url( __FILE__ ) . 'assets/js/syc-carousel.js',
+		'syc-carrousel-script',
+		plugin_dir_url( __FILE__ ) . 'assets/js/syc-carrousel.js',
 		array(),
 		SYC_VERSION,
 		true
@@ -209,7 +231,7 @@ add_action( 'init', 'syc_register_assets' );
  * @return string
  */
 function syc_unwrap_shortcode_paragraphs( $content ) {
-	$shortcodes = array( 'scientias_youtube_carousel' );
+	$shortcodes = array( 'scientias_youtube_carrousel' );
 	$pattern    = get_shortcode_regex( $shortcodes );
 
 	return preg_replace( '/<p>\s*(' . $pattern . ')\s*<\/p>/s', '$1', $content );
@@ -260,7 +282,7 @@ function syc_sanitize_link_overrides( $raw_overrides ) {
 			continue;
 		}
 
-		$video_id = isset( $row['video_id'] ) ? trim( sanitize_text_field( wp_unslash( $row['video_id'] ) ) ) : '';
+		$video_id = isset( $row['video_id'] ) ? syc_sanitize_youtube_video_id( $row['video_id'] ) : '';
 		$url      = isset( $row['url'] ) ? esc_url_raw( wp_unslash( $row['url'] ) ) : '';
 
 		if ( '' === $video_id || '' === $url ) {
@@ -271,6 +293,22 @@ function syc_sanitize_link_overrides( $raw_overrides ) {
 	}
 
 	return $overrides;
+}
+
+/**
+ * Sanitize een YouTube video-ID.
+ *
+ * @param mixed $video_id Ruwe video-ID.
+ * @return string
+ */
+function syc_sanitize_youtube_video_id( $video_id ) {
+	$video_id = trim( sanitize_text_field( wp_unslash( $video_id ) ) );
+
+	if ( ! preg_match( '/^[A-Za-z0-9_-]{6,20}$/', $video_id ) ) {
+		return '';
+	}
+
+	return $video_id;
 }
 
 /**
@@ -324,22 +362,39 @@ function syc_sanitize_settings( $input ) {
  * Voeg instellingenpagina toe onder het YouTube carrousel menu.
  */
 function syc_add_settings_page() {
+	add_menu_page(
+		__( 'YouTube carrousel', 'scientias-youtube-carrousel' ),
+		__( 'YouTube carrousel', 'scientias-youtube-carrousel' ),
+		'manage_options',
+		'syc-settings',
+		'syc_render_settings_page',
+		'dashicons-video-alt3'
+	);
+
 	add_submenu_page(
-		'edit.php?post_type=syc_video',
-		__( 'YouTube feed instellingen', 'scientias-youtube-carousel' ),
-		__( 'Feed instellingen', 'scientias-youtube-carousel' ),
+		'syc-settings',
+		__( 'YouTube feed instellingen', 'scientias-youtube-carrousel' ),
+		__( 'Feed instellingen', 'scientias-youtube-carrousel' ),
 		'manage_options',
 		'syc-settings',
 		'syc_render_settings_page'
 	);
 
 	add_submenu_page(
-		'edit.php?post_type=syc_video',
-		__( 'Link overrides', 'scientias-youtube-carousel' ),
-		__( 'Link overrides', 'scientias-youtube-carousel' ),
+		'syc-settings',
+		__( 'Link overrides', 'scientias-youtube-carrousel' ),
+		__( 'Link overrides', 'scientias-youtube-carrousel' ),
 		'manage_options',
 		'syc-link-overrides',
 		'syc_render_link_overrides_page'
+	);
+
+	add_submenu_page(
+		'syc-settings',
+		__( 'Losse video-items', 'scientias-youtube-carrousel' ),
+		__( 'Losse video-items', 'scientias-youtube-carrousel' ),
+		'edit_posts',
+		'edit.php?post_type=syc_video'
 	);
 }
 add_action( 'admin_menu', 'syc_add_settings_page' );
@@ -370,11 +425,11 @@ function syc_render_settings_page() {
 	$status   = get_option( 'syc_api_feed_meta', array() );
 	?>
 	<div class="wrap">
-		<h1><?php esc_html_e( 'YouTube feed instellingen', 'scientias-youtube-carousel' ); ?></h1>
+		<h1><?php esc_html_e( 'YouTube feed instellingen', 'scientias-youtube-carrousel' ); ?></h1>
 
 		<?php if ( ! empty( $refreshed ) ) : ?>
 			<div class="notice notice-success is-dismissible">
-				<p><?php esc_html_e( 'De YouTube feed cache is geleegd. De volgende paginaweergave bouwt de feed opnieuw op.', 'scientias-youtube-carousel' ); ?></p>
+				<p><?php esc_html_e( 'De YouTube feed cache is geleegd. De volgende paginaweergave bouwt de feed opnieuw op.', 'scientias-youtube-carrousel' ); ?></p>
 			</div>
 		<?php endif; ?>
 
@@ -388,7 +443,7 @@ function syc_render_settings_page() {
 			<table class="form-table" role="presentation">
 				<tr>
 					<th scope="row">
-						<label for="syc_settings_api_key"><?php esc_html_e( 'YouTube API sleutel', 'scientias-youtube-carousel' ); ?></label>
+						<label for="syc_settings_api_key"><?php esc_html_e( 'YouTube API sleutel', 'scientias-youtube-carrousel' ); ?></label>
 					</th>
 					<td>
 						<input
@@ -398,17 +453,17 @@ function syc_render_settings_page() {
 							value=""
 							class="regular-text"
 							autocomplete="new-password"
-							placeholder="<?php echo ! empty( $settings['api_key'] ) ? esc_attr__( 'API-key opgeslagen; leeg laten om te behouden', 'scientias-youtube-carousel' ) : ''; ?>"
+							placeholder="<?php echo ! empty( $settings['api_key'] ) ? esc_attr__( 'API-key opgeslagen; leeg laten om te behouden', 'scientias-youtube-carrousel' ) : ''; ?>"
 						/>
 						<p class="description">
-							<?php esc_html_e( 'Voer alleen een nieuwe YouTube Data API v3 key in als je de bestaande key wilt vervangen. Een opgeslagen key wordt hier niet zichtbaar getoond.', 'scientias-youtube-carousel' ); ?>
+							<?php esc_html_e( 'Voer alleen een nieuwe YouTube Data API v3 key in als je de bestaande key wilt vervangen. Een opgeslagen key wordt hier niet zichtbaar getoond.', 'scientias-youtube-carrousel' ); ?>
 						</p>
 					</td>
 				</tr>
 
 				<tr>
 					<th scope="row">
-						<label for="syc_settings_channel_id"><?php esc_html_e( 'Kanaal ID', 'scientias-youtube-carousel' ); ?></label>
+						<label for="syc_settings_channel_id"><?php esc_html_e( 'Kanaal ID', 'scientias-youtube-carrousel' ); ?></label>
 					</th>
 					<td>
 						<input
@@ -419,14 +474,14 @@ function syc_render_settings_page() {
 							class="regular-text"
 						/>
 						<p class="description">
-							<?php esc_html_e( 'Bijvoorbeeld: UC... (YouTube kanaal ID). Wordt gebruikt om de Shorts-playlist af te leiden.', 'scientias-youtube-carousel' ); ?>
+							<?php esc_html_e( 'Bijvoorbeeld: UC... (YouTube kanaal ID). Wordt gebruikt om de Shorts-playlist af te leiden.', 'scientias-youtube-carrousel' ); ?>
 						</p>
 					</td>
 				</tr>
 
 				<tr>
 					<th scope="row">
-						<label for="syc_settings_max_items"><?php esc_html_e( 'Maximaal aantal items', 'scientias-youtube-carousel' ); ?></label>
+						<label for="syc_settings_max_items"><?php esc_html_e( 'Maximaal aantal items', 'scientias-youtube-carrousel' ); ?></label>
 					</th>
 					<td>
 						<input
@@ -439,7 +494,7 @@ function syc_render_settings_page() {
 							class="small-text"
 						/>
 						<p class="description">
-							<?php esc_html_e( 'Hoeveel Shorts maximaal in de carrousel getoond worden (1–50).', 'scientias-youtube-carousel' ); ?>
+							<?php esc_html_e( 'Hoeveel Shorts maximaal in de carrousel getoond worden (1–50).', 'scientias-youtube-carrousel' ); ?>
 						</p>
 					</td>
 				</tr>
@@ -450,47 +505,47 @@ function syc_render_settings_page() {
 
 		<hr />
 
-		<h2><?php esc_html_e( 'Feed cache', 'scientias-youtube-carousel' ); ?></h2>
-		<p><?php esc_html_e( 'De feed wordt automatisch periodiek ververst. Je kunt de cache hier ook handmatig legen.', 'scientias-youtube-carousel' ); ?></p>
+		<h2><?php esc_html_e( 'Feed cache', 'scientias-youtube-carrousel' ); ?></h2>
+		<p><?php esc_html_e( 'De feed wordt automatisch periodiek ververst. Je kunt de cache hier ook handmatig legen.', 'scientias-youtube-carrousel' ); ?></p>
 		<form method="post">
 			<?php wp_nonce_field( 'syc_manual_refresh_action', 'syc_manual_refresh_nonce' ); ?>
-			<?php submit_button( __( 'Cache legen', 'scientias-youtube-carousel' ), 'secondary', 'syc_manual_refresh', false ); ?>
+			<?php submit_button( __( 'Cache legen', 'scientias-youtube-carrousel' ), 'secondary', 'syc_manual_refresh', false ); ?>
 		</form>
 
 		<hr />
 
-		<h2><?php esc_html_e( 'Feed status', 'scientias-youtube-carousel' ); ?></h2>
+		<h2><?php esc_html_e( 'Feed status', 'scientias-youtube-carrousel' ); ?></h2>
 		<?php if ( empty( $settings['api_key'] ) || empty( $settings['channel_id'] ) ) : ?>
-			<p><?php esc_html_e( 'Configureer eerst je API sleutel en kanaal ID om de status van de YouTube feed te kunnen bekijken.', 'scientias-youtube-carousel' ); ?></p>
+			<p><?php esc_html_e( 'Configureer eerst je API sleutel en kanaal ID om de status van de YouTube feed te kunnen bekijken.', 'scientias-youtube-carrousel' ); ?></p>
 		<?php else : ?>
 			<?php if ( empty( $status ) ) : ?>
-				<p><?php esc_html_e( 'Er is nog geen aanvraag naar de YouTube API gedaan. Bezoek een pagina met de carrousel of leeg de cache om een eerste fetch te forceren.', 'scientias-youtube-carousel' ); ?></p>
+				<p><?php esc_html_e( 'Er is nog geen aanvraag naar de YouTube API gedaan. Bezoek een pagina met de carrousel of leeg de cache om een eerste fetch te forceren.', 'scientias-youtube-carrousel' ); ?></p>
 			<?php else : ?>
 				<?php
 				$timestamp = isset( $status['updated_at'] ) ? (int) $status['updated_at'] : 0;
-				$when      = $timestamp ? date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $timestamp ) : __( 'onbekend', 'scientias-youtube-carousel' );
+				$when      = $timestamp ? date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $timestamp ) : __( 'onbekend', 'scientias-youtube-carrousel' );
 				?>
 				<table class="widefat striped" style="max-width: 600px;">
 					<tbody>
 						<tr>
-							<th scope="row"><?php esc_html_e( 'Laatste update', 'scientias-youtube-carousel' ); ?></th>
+							<th scope="row"><?php esc_html_e( 'Laatste update', 'scientias-youtube-carrousel' ); ?></th>
 							<td><?php echo esc_html( $when ); ?></td>
 						</tr>
 						<tr>
-							<th scope="row"><?php esc_html_e( 'Status', 'scientias-youtube-carousel' ); ?></th>
+							<th scope="row"><?php esc_html_e( 'Status', 'scientias-youtube-carrousel' ); ?></th>
 							<td>
 								<?php
 								if ( isset( $status['status'] ) && 'ok' === $status['status'] ) {
 									printf(
 										/* translators: %d: aantal items in feed. */
-										esc_html__( 'OK – %d items ontvangen uit de YouTube Shorts feed.', 'scientias-youtube-carousel' ),
+										esc_html__( 'OK – %d items ontvangen uit de YouTube Shorts feed.', 'scientias-youtube-carrousel' ),
 										isset( $status['items'] ) ? (int) $status['items'] : 0
 									);
 								} elseif ( isset( $status['status'] ) && 'error' === $status['status'] ) {
-									echo esc_html__( 'Fout bij het ophalen van de feed:', 'scientias-youtube-carousel' ) . ' ';
-									echo isset( $status['message'] ) ? esc_html( $status['message'] ) : esc_html__( 'Onbekende fout.', 'scientias-youtube-carousel' );
+									echo esc_html__( 'Fout bij het ophalen van de feed:', 'scientias-youtube-carrousel' ) . ' ';
+									echo isset( $status['message'] ) ? esc_html( $status['message'] ) : esc_html__( 'Onbekende fout.', 'scientias-youtube-carrousel' );
 								} else {
-									esc_html_e( 'Onbekende status.', 'scientias-youtube-carousel' );
+									esc_html_e( 'Onbekende status.', 'scientias-youtube-carrousel' );
 								}
 								?>
 							</td>
@@ -524,8 +579,8 @@ function syc_render_link_overrides_page() {
 	$base_url       = menu_page_url( 'syc-link-overrides', false );
 	?>
 	<div class="wrap">
-		<h1><?php esc_html_e( 'Link overrides', 'scientias-youtube-carousel' ); ?></h1>
-		<p><?php esc_html_e( 'Koppel automatische YouTube feed-video\'s optioneel aan een pagina op de site. Zonder override blijft de titel gewone tekst en opent de thumbnail fullscreen.', 'scientias-youtube-carousel' ); ?></p>
+		<h1><?php esc_html_e( 'Link overrides', 'scientias-youtube-carrousel' ); ?></h1>
+		<p><?php esc_html_e( 'Koppel automatische YouTube feed-video\'s optioneel aan een pagina op de site. Zonder override blijft de titel gewone tekst en opent de thumbnail fullscreen.', 'scientias-youtube-carrousel' ); ?></p>
 
 		<form method="post" action="options.php">
 			<?php settings_fields( 'syc_settings_group' ); ?>
@@ -537,12 +592,12 @@ function syc_render_link_overrides_page() {
 				<input type="hidden" name="syc_settings[link_overrides][existing_<?php echo esc_attr( md5( $video_id ) ); ?>][url]" value="<?php echo esc_url( $url ); ?>" />
 			<?php endforeach; ?>
 
-			<h2><?php esc_html_e( 'Nieuwe link override toevoegen', 'scientias-youtube-carousel' ); ?></h2>
+			<h2><?php esc_html_e( 'Nieuwe link override toevoegen', 'scientias-youtube-carrousel' ); ?></h2>
 			<table class="widefat striped" style="max-width: 900px; margin-top: 1rem;">
 				<thead>
 					<tr>
-						<th style="width: 220px;"><?php esc_html_e( 'YouTube video-ID', 'scientias-youtube-carousel' ); ?></th>
-						<th><?php esc_html_e( 'Link naar pagina', 'scientias-youtube-carousel' ); ?></th>
+						<th style="width: 220px;"><?php esc_html_e( 'YouTube video-ID', 'scientias-youtube-carrousel' ); ?></th>
+						<th><?php esc_html_e( 'Link naar pagina', 'scientias-youtube-carrousel' ); ?></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -558,20 +613,20 @@ function syc_render_link_overrides_page() {
 			</table>
 
 			<p class="description">
-				<?php esc_html_e( 'Tip: de video-ID staat in de YouTube URL na ?v= of na /shorts/. Maak een URL-veld leeg om die override bij opslaan te verwijderen.', 'scientias-youtube-carousel' ); ?>
+				<?php esc_html_e( 'Tip: de video-ID staat in de YouTube URL na ?v= of na /shorts/. Maak een URL-veld leeg om die override bij opslaan te verwijderen.', 'scientias-youtube-carrousel' ); ?>
 			</p>
 
-			<?php submit_button( __( 'Nieuwe override opslaan', 'scientias-youtube-carousel' ) ); ?>
+			<?php submit_button( __( 'Nieuwe override opslaan', 'scientias-youtube-carrousel' ) ); ?>
 		</form>
 
 		<?php if ( ! empty( $link_overrides ) ) : ?>
 			<hr />
-			<h2><?php esc_html_e( 'Bestaande link overrides bewerken', 'scientias-youtube-carousel' ); ?></h2>
+			<h2><?php esc_html_e( 'Bestaande link overrides bewerken', 'scientias-youtube-carrousel' ); ?></h2>
 			<p>
 				<?php
 				printf(
 					/* translators: 1: first item number, 2: last item number, 3: total item count. */
-					esc_html__( 'Toont %1$d-%2$d van %3$d opgeslagen koppelingen.', 'scientias-youtube-carousel' ),
+					esc_html__( 'Toont %1$d-%2$d van %3$d opgeslagen koppelingen.', 'scientias-youtube-carrousel' ),
 					$total_items ? $offset + 1 : 0,
 					min( $offset + $per_page, $total_items ),
 					$total_items
@@ -590,8 +645,8 @@ function syc_render_link_overrides_page() {
 									'format'    => '',
 									'current'   => $current_page,
 									'total'     => $total_pages,
-									'prev_text' => __( '&laquo;', 'scientias-youtube-carousel' ),
-									'next_text' => __( '&raquo;', 'scientias-youtube-carousel' ),
+									'prev_text' => __( '&laquo;', 'scientias-youtube-carrousel' ),
+									'next_text' => __( '&raquo;', 'scientias-youtube-carrousel' ),
 								)
 							)
 						);
@@ -616,8 +671,8 @@ function syc_render_link_overrides_page() {
 				<table class="widefat striped" style="max-width: 900px;">
 					<thead>
 						<tr>
-							<th style="width: 220px;"><?php esc_html_e( 'Video-ID', 'scientias-youtube-carousel' ); ?></th>
-							<th><?php esc_html_e( 'Gekoppelde pagina', 'scientias-youtube-carousel' ); ?></th>
+							<th style="width: 220px;"><?php esc_html_e( 'Video-ID', 'scientias-youtube-carrousel' ); ?></th>
+							<th><?php esc_html_e( 'Gekoppelde pagina', 'scientias-youtube-carrousel' ); ?></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -636,10 +691,10 @@ function syc_render_link_overrides_page() {
 				</table>
 
 				<p class="description">
-					<?php esc_html_e( 'Maak een URL-veld leeg en sla op om die override te verwijderen. Alleen de huidige pagina met overrides is bewerkbaar; andere pagina\'s blijven behouden.', 'scientias-youtube-carousel' ); ?>
+					<?php esc_html_e( 'Maak een URL-veld leeg en sla op om die override te verwijderen. Alleen de huidige pagina met overrides is bewerkbaar; andere pagina\'s blijven behouden.', 'scientias-youtube-carrousel' ); ?>
 				</p>
 
-				<?php submit_button( __( 'Wijzigingen opslaan', 'scientias-youtube-carousel' ) ); ?>
+				<?php submit_button( __( 'Wijzigingen opslaan', 'scientias-youtube-carrousel' ) ); ?>
 			</form>
 
 			<?php if ( $total_pages > 1 ) : ?>
@@ -653,8 +708,8 @@ function syc_render_link_overrides_page() {
 									'format'    => '',
 									'current'   => $current_page,
 									'total'     => $total_pages,
-									'prev_text' => __( '&laquo;', 'scientias-youtube-carousel' ),
-									'next_text' => __( '&raquo;', 'scientias-youtube-carousel' ),
+									'prev_text' => __( '&laquo;', 'scientias-youtube-carrousel' ),
+									'next_text' => __( '&raquo;', 'scientias-youtube-carrousel' ),
 								)
 							)
 						);
@@ -666,14 +721,14 @@ function syc_render_link_overrides_page() {
 
 		<?php $cached_feed_items = get_transient( SYC_API_FEED_CACHE_KEY ); ?>
 		<?php if ( is_array( $cached_feed_items ) && ! empty( $cached_feed_items ) ) : ?>
-			<h2><?php esc_html_e( 'Huidige feed-video\'s', 'scientias-youtube-carousel' ); ?></h2>
-			<p><?php esc_html_e( 'Gebruik deze video-ID\'s bij Link overrides. De status laat zien of er voor die feedvideo al een pagina is gekoppeld.', 'scientias-youtube-carousel' ); ?></p>
+			<h2><?php esc_html_e( 'Huidige feed-video\'s', 'scientias-youtube-carrousel' ); ?></h2>
+			<p><?php esc_html_e( 'Gebruik deze video-ID\'s bij Link overrides. De status laat zien of er voor die feedvideo al een pagina is gekoppeld.', 'scientias-youtube-carrousel' ); ?></p>
 			<table class="widefat striped" style="max-width: 900px;">
 				<thead>
 					<tr>
-						<th style="width: 180px;"><?php esc_html_e( 'Video-ID', 'scientias-youtube-carousel' ); ?></th>
-						<th><?php esc_html_e( 'Titel', 'scientias-youtube-carousel' ); ?></th>
-						<th><?php esc_html_e( 'Override', 'scientias-youtube-carousel' ); ?></th>
+						<th style="width: 180px;"><?php esc_html_e( 'Video-ID', 'scientias-youtube-carrousel' ); ?></th>
+						<th><?php esc_html_e( 'Titel', 'scientias-youtube-carrousel' ); ?></th>
+						<th><?php esc_html_e( 'Override', 'scientias-youtube-carrousel' ); ?></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -690,7 +745,7 @@ function syc_render_link_overrides_page() {
 								<?php if ( ! empty( $override_url ) ) : ?>
 									<a href="<?php echo esc_url( $override_url ); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html( $override_url ); ?></a>
 								<?php else : ?>
-									<?php esc_html_e( 'Geen override', 'scientias-youtube-carousel' ); ?>
+									<?php esc_html_e( 'Geen override', 'scientias-youtube-carrousel' ); ?>
 								<?php endif; ?>
 							</td>
 						</tr>
@@ -732,7 +787,7 @@ function syc_get_shorts_playlist_id( $channel_id ) {
  * @return string
  */
 function syc_get_youtube_thumbnail_url( $video_id ) {
-	$video_id = trim( sanitize_text_field( $video_id ) );
+	$video_id = syc_sanitize_youtube_video_id( $video_id );
 
 	if ( '' === $video_id ) {
 		return '';
@@ -762,27 +817,31 @@ function syc_extract_youtube_video_id( $url ) {
 	$host = strtolower( $parts['host'] );
 	$path = isset( $parts['path'] ) ? trim( $parts['path'], '/' ) : '';
 
-	if ( false !== strpos( $host, 'youtu.be' ) && '' !== $path ) {
+	if ( ! in_array( $host, array( 'youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be' ), true ) ) {
+		return '';
+	}
+
+	if ( 'youtu.be' === $host && '' !== $path ) {
 		$segments = explode( '/', $path );
-		return sanitize_text_field( $segments[0] );
+		return syc_sanitize_youtube_video_id( $segments[0] );
 	}
 
 	if ( ! empty( $parts['query'] ) ) {
 		parse_str( $parts['query'], $query );
 		if ( ! empty( $query['v'] ) ) {
-			return sanitize_text_field( $query['v'] );
+			return syc_sanitize_youtube_video_id( $query['v'] );
 		}
 	}
 
 	$segments = '' !== $path ? explode( '/', $path ) : array();
 	$shorts  = array_search( 'shorts', $segments, true );
 	if ( false !== $shorts && ! empty( $segments[ $shorts + 1 ] ) ) {
-		return sanitize_text_field( $segments[ $shorts + 1 ] );
+		return syc_sanitize_youtube_video_id( $segments[ $shorts + 1 ] );
 	}
 
 	$embed = array_search( 'embed', $segments, true );
 	if ( false !== $embed && ! empty( $segments[ $embed + 1 ] ) ) {
-		return sanitize_text_field( $segments[ $embed + 1 ] );
+		return syc_sanitize_youtube_video_id( $segments[ $embed + 1 ] );
 	}
 
 	return '';
@@ -799,12 +858,12 @@ function syc_get_api_shorts_items() {
 	$settings = syc_get_settings();
 
 	if ( empty( $settings['api_key'] ) || empty( $settings['channel_id'] ) ) {
-		return new WP_Error( 'syc_missing_settings', __( 'YouTube API sleutel of kanaal ID ontbreekt.', 'scientias-youtube-carousel' ) );
+		return new WP_Error( 'syc_missing_settings', __( 'YouTube API sleutel of kanaal ID ontbreekt.', 'scientias-youtube-carrousel' ) );
 	}
 
 	$playlist_id = syc_get_shorts_playlist_id( $settings['channel_id'] );
 	if ( ! $playlist_id ) {
-		$error = new WP_Error( 'syc_invalid_channel_id', __( 'Ongeldig kanaal ID voor Shorts playlist.', 'scientias-youtube-carousel' ) );
+		$error = new WP_Error( 'syc_invalid_channel_id', __( 'Ongeldig kanaal ID voor Shorts playlist.', 'scientias-youtube-carrousel' ) );
 		update_option(
 			'syc_api_feed_meta',
 			array(
@@ -856,7 +915,7 @@ function syc_get_api_shorts_items() {
 
 	$code = wp_remote_retrieve_response_code( $response );
 	if ( 200 !== $code ) {
-		$error = new WP_Error( 'syc_api_http_error', sprintf( __( 'YouTube API fout: HTTP %d', 'scientias-youtube-carousel' ), (int) $code ) );
+		$error = new WP_Error( 'syc_api_http_error', sprintf( __( 'YouTube API fout: HTTP %d', 'scientias-youtube-carrousel' ), (int) $code ) );
 		update_option(
 			'syc_api_feed_meta',
 			array(
@@ -873,7 +932,7 @@ function syc_get_api_shorts_items() {
 	$data = json_decode( $body, true );
 
 	if ( ! is_array( $data ) || empty( $data['items'] ) ) {
-		$error = new WP_Error( 'syc_api_empty', __( 'Geen items gevonden in de YouTube Shorts feed.', 'scientias-youtube-carousel' ) );
+		$error = new WP_Error( 'syc_api_empty', __( 'Geen items gevonden in de YouTube Shorts feed.', 'scientias-youtube-carrousel' ) );
 		update_option(
 			'syc_api_feed_meta',
 			array(
@@ -917,7 +976,7 @@ function syc_get_api_shorts_items() {
 	}
 
 	if ( empty( $items ) ) {
-		$error = new WP_Error( 'syc_api_empty_items', __( 'Er zijn geen geldige Shorts items gevonden.', 'scientias-youtube-carousel' ) );
+		$error = new WP_Error( 'syc_api_empty_items', __( 'Er zijn geen geldige Shorts items gevonden.', 'scientias-youtube-carrousel' ) );
 		update_option(
 			'syc_api_feed_meta',
 			array(
@@ -948,23 +1007,23 @@ function syc_get_api_shorts_items() {
 /**
  * Shortcode output.
  *
- * Gebruik: [scientias_youtube_carousel title="Our work in two minutes"]
+ * Gebruik: [scientias_youtube_carrousel title="Our work in two minutes"]
  *
  * @param array $atts Shortcode attributes.
  * @return string
  */
-function syc_render_carousel_shortcode( $atts ) {
+function syc_render_carrousel_shortcode( $atts ) {
 	$atts = shortcode_atts(
 		array(
-			'title' => __( 'Video', 'scientias-youtube-carousel' ),
+			'title' => __( 'Video', 'scientias-youtube-carrousel' ),
 			'limit' => -1,
 		),
 		$atts,
-		'scientias_youtube_carousel'
+		'scientias_youtube_carrousel'
 	);
 
-	wp_enqueue_style( 'syc-carousel-style' );
-	wp_enqueue_script( 'syc-carousel-script' );
+	wp_enqueue_style( 'syc-carrousel-style' );
+	wp_enqueue_script( 'syc-carrousel-script' );
 
 	$use_api        = false;
 	$items          = array();
@@ -998,19 +1057,19 @@ function syc_render_carousel_shortcode( $atts ) {
 
 	$unique_id = uniqid( 'syc_', false );
 	?>
-	<div class="syc-carousel syc-video-section" id="<?php echo esc_attr( $unique_id ); ?>">
-		<div class="syc-carousel-header syc-section-header">
+	<div class="syc-carrousel syc-video-section" id="<?php echo esc_attr( $unique_id ); ?>">
+		<div class="syc-carrousel-header syc-section-header">
 			<?php if ( ! empty( $atts['title'] ) ) : ?>
-				<h2 class="syc-carousel-title"><?php echo esc_html( $atts['title'] ); ?></h2>
+				<h2 class="syc-carrousel-title"><?php echo esc_html( $atts['title'] ); ?></h2>
 			<?php endif; ?>
 			<div class="syc-header-nav">
-				<button type="button" class="syc-nav syc-nav-prev" aria-label="<?php esc_attr_e( 'Vorige video', 'scientias-youtube-carousel' ); ?>">&lsaquo;</button>
-				<button type="button" class="syc-nav syc-nav-next" aria-label="<?php esc_attr_e( 'Volgende video', 'scientias-youtube-carousel' ); ?>">&rsaquo;</button>
+				<button type="button" class="syc-nav syc-nav-prev" aria-label="<?php esc_attr_e( 'Vorige video', 'scientias-youtube-carrousel' ); ?>">&lsaquo;</button>
+				<button type="button" class="syc-nav syc-nav-next" aria-label="<?php esc_attr_e( 'Volgende video', 'scientias-youtube-carrousel' ); ?>">&rsaquo;</button>
 			</div>
 		</div>
 
-		<div class="syc-carousel-wrapper">
-			<div class="syc-items" role="list" tabindex="0" aria-label="<?php esc_attr_e( 'Video carrousel', 'scientias-youtube-carousel' ); ?>">
+		<div class="syc-carrousel-wrapper">
+			<div class="syc-items" role="list" tabindex="0" aria-label="<?php esc_attr_e( 'Video carrousel', 'scientias-youtube-carrousel' ); ?>">
 				<?php if ( $use_api ) : ?>
 					<?php foreach ( $items as $item ) : ?>
 						<?php
@@ -1108,4 +1167,4 @@ function syc_render_carousel_shortcode( $atts ) {
 
 	return ob_get_clean();
 }
-add_shortcode( 'scientias_youtube_carousel', 'syc_render_carousel_shortcode' );
+add_shortcode( 'scientias_youtube_carrousel', 'syc_render_carrousel_shortcode' );
