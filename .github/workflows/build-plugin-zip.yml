@@ -1,0 +1,37 @@
+name: Build Plugin ZIP
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-zip:
+    name: Build plugin ZIP
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare plugin directory
+        run: |
+          mkdir -p build/scientias-youtube-carousel
+          rsync -av \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='build' \
+            --exclude='*.zip' \
+            ./ build/scientias-youtube-carousel/
+
+      - name: Create ZIP
+        run: |
+          cd build
+          zip -r scientias-youtube-carousel.zip scientias-youtube-carousel
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scientias-youtube-carousel
+          path: build/scientias-youtube-carousel.zip
