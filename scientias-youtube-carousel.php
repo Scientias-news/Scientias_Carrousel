@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scientias YouTube Carousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.0.5
+ * Version:     1.0.6.1
  * Author:      Scientias
  * Text Domain: scientias-youtube-carousel
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.0.5' );
+define( 'SYC_VERSION', '1.0.6.1' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
 define( 'SYC_API_FEED_CACHE_TTL', 5 * MINUTE_IN_SECONDS );
 
@@ -514,6 +514,14 @@ function syc_render_link_overrides_page() {
 
 	$settings       = syc_get_settings();
 	$link_overrides = ! empty( $settings['link_overrides'] ) && is_array( $settings['link_overrides'] ) ? $settings['link_overrides'] : array();
+	$per_page       = 50;
+	$total_items    = count( $link_overrides );
+	$total_pages    = max( 1, (int) ceil( $total_items / $per_page ) );
+	$current_page   = isset( $_GET['paged'] ) ? max( 1, absint( $_GET['paged'] ) ) : 1;
+	$current_page   = min( $current_page, $total_pages );
+	$offset         = ( $current_page - 1 ) * $per_page;
+	$paged_overrides = array_slice( $link_overrides, $offset, $per_page, true );
+	$base_url       = menu_page_url( 'syc-link-overrides', false );
 	?>
 	<div class="wrap">
 		<h1><?php esc_html_e( 'Link overrides', 'scientias-youtube-carousel' ); ?></h1>
@@ -524,7 +532,12 @@ function syc_render_link_overrides_page() {
 			<input type="hidden" name="syc_settings[api_key]" value="" />
 			<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
 			<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
+			<?php foreach ( $link_overrides as $video_id => $url ) : ?>
+				<input type="hidden" name="syc_settings[link_overrides][existing_<?php echo esc_attr( md5( $video_id ) ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" />
+				<input type="hidden" name="syc_settings[link_overrides][existing_<?php echo esc_attr( md5( $video_id ) ); ?>][url]" value="<?php echo esc_url( $url ); ?>" />
+			<?php endforeach; ?>
 
+			<h2><?php esc_html_e( 'Nieuwe link override toevoegen', 'scientias-youtube-carousel' ); ?></h2>
 			<table class="widefat striped" style="max-width: 900px; margin-top: 1rem;">
 				<thead>
 					<tr>
@@ -533,28 +546,12 @@ function syc_render_link_overrides_page() {
 					</tr>
 				</thead>
 				<tbody>
-					<?php
-					$row_index = 0;
-					foreach ( $link_overrides as $video_id => $url ) :
-						?>
-						<tr>
-							<td>
-								<input type="text" name="syc_settings[link_overrides][<?php echo esc_attr( $row_index ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" class="regular-text" />
-							</td>
-							<td>
-								<input type="url" name="syc_settings[link_overrides][<?php echo esc_attr( $row_index ); ?>][url]" value="<?php echo esc_url( $url ); ?>" class="large-text" placeholder="https://www.scientias.nl/..." />
-							</td>
-						</tr>
-						<?php
-						$row_index++;
-					endforeach;
-					?>
 					<tr>
 						<td>
-							<input type="text" name="syc_settings[link_overrides][<?php echo esc_attr( $row_index ); ?>][video_id]" value="" class="regular-text" placeholder="dQw4w9WgXcQ" />
+							<input type="text" name="syc_settings[link_overrides][new][video_id]" value="" class="regular-text" placeholder="dQw4w9WgXcQ" />
 						</td>
 						<td>
-							<input type="url" name="syc_settings[link_overrides][<?php echo esc_attr( $row_index ); ?>][url]" value="" class="large-text" placeholder="https://www.scientias.nl/..." />
+							<input type="url" name="syc_settings[link_overrides][new][url]" value="" class="large-text" placeholder="https://www.scientias.nl/..." />
 						</td>
 					</tr>
 				</tbody>
@@ -564,27 +561,107 @@ function syc_render_link_overrides_page() {
 				<?php esc_html_e( 'Tip: de video-ID staat in de YouTube URL na ?v= of na /shorts/. Maak een URL-veld leeg om die override bij opslaan te verwijderen.', 'scientias-youtube-carousel' ); ?>
 			</p>
 
-			<?php submit_button(); ?>
+			<?php submit_button( __( 'Nieuwe override opslaan', 'scientias-youtube-carousel' ) ); ?>
 		</form>
 
 		<?php if ( ! empty( $link_overrides ) ) : ?>
-			<h2><?php esc_html_e( 'Opgeslagen koppelingen', 'scientias-youtube-carousel' ); ?></h2>
-			<table class="widefat striped" style="max-width: 900px;">
-				<thead>
-					<tr>
-						<th style="width: 220px;"><?php esc_html_e( 'Video-ID', 'scientias-youtube-carousel' ); ?></th>
-						<th><?php esc_html_e( 'Gekoppelde pagina', 'scientias-youtube-carousel' ); ?></th>
-					</tr>
-				</thead>
-				<tbody>
-					<?php foreach ( $link_overrides as $video_id => $url ) : ?>
+			<hr />
+			<h2><?php esc_html_e( 'Bestaande link overrides bewerken', 'scientias-youtube-carousel' ); ?></h2>
+			<p>
+				<?php
+				printf(
+					/* translators: 1: first item number, 2: last item number, 3: total item count. */
+					esc_html__( 'Toont %1$d-%2$d van %3$d opgeslagen koppelingen.', 'scientias-youtube-carousel' ),
+					$total_items ? $offset + 1 : 0,
+					min( $offset + $per_page, $total_items ),
+					$total_items
+				);
+				?>
+			</p>
+
+			<?php if ( $total_pages > 1 ) : ?>
+				<div class="tablenav top" style="max-width: 900px;">
+					<div class="tablenav-pages">
+						<?php
+						echo wp_kses_post(
+							paginate_links(
+								array(
+									'base'      => add_query_arg( 'paged', '%#%', $base_url ),
+									'format'    => '',
+									'current'   => $current_page,
+									'total'     => $total_pages,
+									'prev_text' => __( '&laquo;', 'scientias-youtube-carousel' ),
+									'next_text' => __( '&raquo;', 'scientias-youtube-carousel' ),
+								)
+							)
+						);
+						?>
+					</div>
+				</div>
+			<?php endif; ?>
+
+			<form method="post" action="options.php">
+				<?php settings_fields( 'syc_settings_group' ); ?>
+				<input type="hidden" name="syc_settings[api_key]" value="" />
+				<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
+				<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
+				<?php foreach ( $link_overrides as $video_id => $url ) : ?>
+					<?php if ( isset( $paged_overrides[ $video_id ] ) ) : ?>
+						<?php continue; ?>
+					<?php endif; ?>
+					<input type="hidden" name="syc_settings[link_overrides][keep_<?php echo esc_attr( md5( $video_id ) ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" />
+					<input type="hidden" name="syc_settings[link_overrides][keep_<?php echo esc_attr( md5( $video_id ) ); ?>][url]" value="<?php echo esc_url( $url ); ?>" />
+				<?php endforeach; ?>
+
+				<table class="widefat striped" style="max-width: 900px;">
+					<thead>
 						<tr>
-							<td><code><?php echo esc_html( $video_id ); ?></code></td>
-							<td><a href="<?php echo esc_url( $url ); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html( $url ); ?></a></td>
+							<th style="width: 220px;"><?php esc_html_e( 'Video-ID', 'scientias-youtube-carousel' ); ?></th>
+							<th><?php esc_html_e( 'Gekoppelde pagina', 'scientias-youtube-carousel' ); ?></th>
 						</tr>
-					<?php endforeach; ?>
-				</tbody>
-			</table>
+					</thead>
+					<tbody>
+						<?php foreach ( $paged_overrides as $video_id => $url ) : ?>
+							<?php $row_key = 'edit_' . md5( $video_id ); ?>
+							<tr>
+								<td>
+									<input type="text" name="syc_settings[link_overrides][<?php echo esc_attr( $row_key ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" class="regular-text" />
+								</td>
+								<td>
+									<input type="url" name="syc_settings[link_overrides][<?php echo esc_attr( $row_key ); ?>][url]" value="<?php echo esc_url( $url ); ?>" class="large-text" placeholder="https://www.scientias.nl/..." />
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+
+				<p class="description">
+					<?php esc_html_e( 'Maak een URL-veld leeg en sla op om die override te verwijderen. Alleen de huidige pagina met overrides is bewerkbaar; andere pagina\'s blijven behouden.', 'scientias-youtube-carousel' ); ?>
+				</p>
+
+				<?php submit_button( __( 'Wijzigingen opslaan', 'scientias-youtube-carousel' ) ); ?>
+			</form>
+
+			<?php if ( $total_pages > 1 ) : ?>
+				<div class="tablenav bottom" style="max-width: 900px;">
+					<div class="tablenav-pages">
+						<?php
+						echo wp_kses_post(
+							paginate_links(
+								array(
+									'base'      => add_query_arg( 'paged', '%#%', $base_url ),
+									'format'    => '',
+									'current'   => $current_page,
+									'total'     => $total_pages,
+									'prev_text' => __( '&laquo;', 'scientias-youtube-carousel' ),
+									'next_text' => __( '&raquo;', 'scientias-youtube-carousel' ),
+								)
+							)
+						);
+						?>
+					</div>
+				</div>
+			<?php endif; ?>
 		<?php endif; ?>
 
 		<?php $cached_feed_items = get_transient( SYC_API_FEED_CACHE_KEY ); ?>

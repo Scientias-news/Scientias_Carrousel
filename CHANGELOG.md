@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.6.1 - 2026-06-15
+
+- Fixed the submit button label on the feed settings screen after the Link overrides UX update.
+- Confirmed PHP syntax and whitespace checks for the patch release.
+
+## 1.0.6 - 2026-06-15
+
+- Improved the Link overrides admin screen for larger lists.
+- Moved the new override input row to the top of the page with a dedicated save button directly below it.
+- Added pagination for existing link overrides, showing 50 mappings per page.
+- Kept non-visible override pages preserved while editing the current paginated page.
+- Removed the duplicate read-only saved mappings table to reduce clutter.
+
 ## 1.0.5 - 2026-06-15
 
 - Moved automatic feed link overrides to a separate `Link overrides` submenu item.
