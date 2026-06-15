@@ -319,7 +319,7 @@
 			return;
 		}
 
-		var items = root.querySelectorAll('.syc-item[data-video-url]');
+		var items = root.querySelectorAll('.syc-video-button[data-video-url]');
 		if (!items.length) {
 			return;
 		}
