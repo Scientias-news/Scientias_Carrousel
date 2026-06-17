@@ -282,7 +282,7 @@ function syc_sanitize_link_overrides( $raw_overrides ) {
 			continue;
 		}
 
-		$video_id = isset( $row['video_id'] ) ? syc_sanitize_youtube_video_id( $row['video_id'] ) : '';
+		$video_id = isset( $row['video_id'] ) ? syc_sanitize_youtube_video_id( wp_unslash( $row['video_id'] ) ) : '';
 		$url      = isset( $row['url'] ) ? esc_url_raw( wp_unslash( $row['url'] ) ) : '';
 
 		if ( '' === $video_id || '' === $url ) {
@@ -302,13 +302,161 @@ function syc_sanitize_link_overrides( $raw_overrides ) {
  * @return string
  */
 function syc_sanitize_youtube_video_id( $video_id ) {
-	$video_id = trim( sanitize_text_field( wp_unslash( $video_id ) ) );
+	$video_id = trim( sanitize_text_field( (string) $video_id ) );
 
 	if ( ! preg_match( '/^[A-Za-z0-9_-]{6,20}$/', $video_id ) ) {
 		return '';
 	}
 
 	return $video_id;
+}
+
+/**
+ * Parse een CSV-bestand met link overrides.
+ *
+ * Verwacht twee kolommen: YouTube video-ID en URL. Een header-rij is toegestaan.
+ *
+ * @param string $file_path Tijdelijk uploadpad.
+ * @return array|WP_Error
+ */
+function syc_parse_link_overrides_csv( $file_path ) {
+	$handle = fopen( $file_path, 'r' );
+	if ( false === $handle ) {
+		return new WP_Error( 'syc_csv_open_failed', __( 'Het CSV-bestand kon niet worden geopend.', 'scientias-youtube-carrousel' ) );
+	}
+
+	$overrides = array();
+	$line      = 0;
+	$skipped   = 0;
+	$delimiter = ',';
+
+	$first_line = fgets( $handle );
+	if ( false !== $first_line ) {
+		$delimiter = substr_count( $first_line, ';' ) > substr_count( $first_line, ',' ) ? ';' : ',';
+		rewind( $handle );
+	}
+
+	while ( false !== ( $row = fgetcsv( $handle, 0, $delimiter ) ) ) {
+		$line++;
+
+		if ( 1 === $line && isset( $row[0], $row[1] ) ) {
+			$first_header  = strtolower( trim( (string) $row[0] ) );
+			$second_header = strtolower( trim( (string) $row[1] ) );
+
+			if ( in_array( $first_header, array( 'youtube_video_id', 'video_id', 'youtube-id', 'youtube id' ), true ) && in_array( $second_header, array( 'url', 'link', 'short', 'pagina' ), true ) ) {
+				continue;
+			}
+		}
+
+		if ( empty( $row ) || ( isset( $row[0] ) && '' === trim( (string) $row[0] ) ) ) {
+			continue;
+		}
+
+		$video_id = isset( $row[0] ) ? syc_sanitize_youtube_video_id( $row[0] ) : '';
+		$url      = isset( $row[1] ) ? esc_url_raw( trim( (string) $row[1] ) ) : '';
+
+		if ( '' === $video_id || '' === $url ) {
+			$skipped++;
+			continue;
+		}
+
+		$overrides[ $video_id ] = $url;
+	}
+
+	fclose( $handle );
+
+	if ( empty( $overrides ) ) {
+		return new WP_Error( 'syc_csv_no_rows', __( 'Er zijn geen geldige video-ID/URL-koppelingen gevonden in het CSV-bestand.', 'scientias-youtube-carrousel' ) );
+	}
+
+	return array(
+		'overrides' => $overrides,
+		'imported'  => count( $overrides ),
+		'skipped'   => $skipped,
+	);
+}
+
+/**
+ * Verwerk CSV-import voor link overrides.
+ *
+ * @param array $settings Huidige plugininstellingen.
+ * @return array Importmeldingen.
+ */
+function syc_maybe_import_link_overrides_csv( $settings ) {
+	if ( empty( $_POST['syc_csv_import_submit'] ) ) {
+		return array();
+	}
+
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return array(
+			'type'    => 'error',
+			'message' => __( 'Je hebt geen rechten om link overrides te importeren.', 'scientias-youtube-carrousel' ),
+		);
+	}
+
+	$nonce = isset( $_POST['syc_csv_import_nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['syc_csv_import_nonce'] ) ) : '';
+	if ( ! wp_verify_nonce( $nonce, 'syc_csv_import_action' ) ) {
+		return array(
+			'type'    => 'error',
+			'message' => __( 'De CSV-import kon niet worden gevalideerd. Probeer het opnieuw.', 'scientias-youtube-carrousel' ),
+		);
+	}
+
+	if ( empty( $_FILES['syc_link_overrides_csv']['tmp_name'] ) || ! is_uploaded_file( $_FILES['syc_link_overrides_csv']['tmp_name'] ) ) {
+		return array(
+			'type'    => 'error',
+			'message' => __( 'Kies eerst een CSV-bestand om te uploaden.', 'scientias-youtube-carrousel' ),
+		);
+	}
+
+	$file_name = isset( $_FILES['syc_link_overrides_csv']['name'] ) ? sanitize_file_name( wp_unslash( $_FILES['syc_link_overrides_csv']['name'] ) ) : '';
+	$file_ext  = strtolower( pathinfo( $file_name, PATHINFO_EXTENSION ) );
+	if ( 'csv' !== $file_ext ) {
+		return array(
+			'type'    => 'error',
+			'message' => __( 'Upload een bestand met de extensie .csv.', 'scientias-youtube-carrousel' ),
+		);
+	}
+
+	$parsed = syc_parse_link_overrides_csv( $_FILES['syc_link_overrides_csv']['tmp_name'] );
+	if ( is_wp_error( $parsed ) ) {
+		return array(
+			'type'    => 'error',
+			'message' => $parsed->get_error_message(),
+		);
+	}
+
+	$mode               = isset( $_POST['syc_csv_import_mode'] ) ? sanitize_key( wp_unslash( $_POST['syc_csv_import_mode'] ) ) : 'merge';
+	$current_overrides  = ! empty( $settings['link_overrides'] ) && is_array( $settings['link_overrides'] ) ? $settings['link_overrides'] : array();
+	$imported_overrides = $parsed['overrides'];
+	$new_overrides      = 'replace' === $mode ? $imported_overrides : array_merge( $current_overrides, $imported_overrides );
+
+	$new_settings                   = $settings;
+	$new_settings['link_overrides'] = syc_sanitize_link_overrides( $new_overrides );
+	update_option( 'syc_settings', $new_settings );
+	syc_clear_feed_caches();
+
+	if ( 'replace' === $mode ) {
+		$message = sprintf(
+			/* translators: 1: imported row count, 2: skipped row count. */
+			__( 'CSV geïmporteerd: %1$d koppelingen opgeslagen. Alle eerdere link overrides zijn overschreven. Overgeslagen regels: %2$d.', 'scientias-youtube-carrousel' ),
+			(int) $parsed['imported'],
+			(int) $parsed['skipped']
+		);
+	} else {
+		$message = sprintf(
+			/* translators: 1: imported row count, 2: total row count, 3: skipped row count. */
+			__( 'CSV geïmporteerd: %1$d koppelingen toegevoegd of bijgewerkt. Totaal opgeslagen koppelingen: %2$d. Overgeslagen regels: %3$d.', 'scientias-youtube-carrousel' ),
+			(int) $parsed['imported'],
+			count( $new_settings['link_overrides'] ),
+			(int) $parsed['skipped']
+		);
+	}
+
+	return array(
+		'type'    => 'success',
+		'message' => $message,
+	);
 }
 
 /**
@@ -568,6 +716,8 @@ function syc_render_link_overrides_page() {
 	}
 
 	$settings       = syc_get_settings();
+	$import_notice  = syc_maybe_import_link_overrides_csv( $settings );
+	$settings       = syc_get_settings();
 	$link_overrides = ! empty( $settings['link_overrides'] ) && is_array( $settings['link_overrides'] ) ? $settings['link_overrides'] : array();
 	$per_page       = 50;
 	$total_items    = count( $link_overrides );
@@ -581,6 +731,44 @@ function syc_render_link_overrides_page() {
 	<div class="wrap">
 		<h1><?php esc_html_e( 'Link overrides', 'scientias-youtube-carrousel' ); ?></h1>
 		<p><?php esc_html_e( 'Koppel automatische YouTube feed-video\'s optioneel aan een pagina op de site. Zonder override blijft de titel gewone tekst en opent de thumbnail fullscreen.', 'scientias-youtube-carrousel' ); ?></p>
+
+		<?php if ( ! empty( $import_notice ) ) : ?>
+			<div class="notice notice-<?php echo 'success' === $import_notice['type'] ? 'success' : 'error'; ?> is-dismissible">
+				<p><?php echo esc_html( $import_notice['message'] ); ?></p>
+			</div>
+		<?php endif; ?>
+
+		<form method="post" enctype="multipart/form-data" style="max-width: 900px; margin: 1rem 0 2rem; padding: 1rem; background: #fff; border: 1px solid #c3c4c7;">
+			<h2 style="margin-top: 0;"><?php esc_html_e( 'CSV importeren', 'scientias-youtube-carrousel' ); ?></h2>
+			<p><?php esc_html_e( 'Upload een CSV met twee kolommen: YouTube video-ID en URL. Een header zoals youtube_video_id,url is toegestaan. Komma en puntkomma worden ondersteund.', 'scientias-youtube-carrousel' ); ?></p>
+
+			<p>
+				<input type="file" name="syc_link_overrides_csv" accept=".csv,text/csv" />
+			</p>
+
+			<fieldset>
+				<legend class="screen-reader-text"><?php esc_html_e( 'Importmodus', 'scientias-youtube-carrousel' ); ?></legend>
+				<p>
+					<label>
+						<input type="radio" name="syc_csv_import_mode" value="merge" checked="checked" />
+						<?php esc_html_e( 'Toevoegen of bijwerken: bestaande links blijven behouden, behalve als dezelfde video-ID in de CSV staat.', 'scientias-youtube-carrousel' ); ?>
+					</label>
+				</p>
+				<p>
+					<label>
+						<input type="radio" name="syc_csv_import_mode" value="replace" />
+						<strong><?php esc_html_e( 'Alles overschrijven: alle eerdere link overrides worden verwijderd en vervangen door deze CSV.', 'scientias-youtube-carrousel' ); ?></strong>
+					</label>
+				</p>
+			</fieldset>
+
+			<p class="description">
+				<?php esc_html_e( 'Let op: kies alleen “Alles overschrijven” als deze CSV de volledige gewenste lijst bevat.', 'scientias-youtube-carrousel' ); ?>
+			</p>
+
+			<?php wp_nonce_field( 'syc_csv_import_action', 'syc_csv_import_nonce' ); ?>
+			<?php submit_button( __( 'CSV importeren', 'scientias-youtube-carrousel' ), 'secondary', 'syc_csv_import_submit', false ); ?>
+		</form>
 
 		<form method="post" action="options.php">
 			<?php settings_fields( 'syc_settings_group' ); ?>

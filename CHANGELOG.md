@@ -2,11 +2,13 @@
 
 ## 1.0.7 - 2026-06-15
 
+- Added CSV import for Link overrides with merge and overwrite modes, supporting comma and semicolon delimiters.
+- Added a clear warning that overwrite mode replaces all existing link overrides.
 - Renamed manual fallback entries to `Losse video-items` throughout the admin UI.
 - Added explanatory help text to clarify that loose video items are only used as manual source or fallback when the YouTube API feed is unavailable.
 - Added an admin notice on the loose video items list explaining the relationship between API feed, link overrides, and fallback items.
 - Reordered the YouTube carrousel submenu so `Feed instellingen` and `Link overrides` appear before `Losse video-items`.
-- Added `[scientias_youtube_carrousel]` as the correctly spelled shortcode while keeping `[scientias_youtube_carrousel]` as a compatibility alias.
+- Renamed the shortcode to `[scientias_youtube_carrousel]` and removed the old test-phase spelling.
 
 ## 1.0.6.1 - 2026-06-15
 
