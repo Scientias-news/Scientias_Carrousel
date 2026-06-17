@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scientias YouTube Carrousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.0.7
+ * Version:     1.0.9
  * Author:      Scientias
  * Text Domain: scientias-youtube-carrousel
  */
@@ -11,9 +11,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.0.7' );
+define( 'SYC_VERSION', '1.0.9' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
+define( 'SYC_PLAYLIST_CACHE_PREFIX', 'syc_playlist_cache_' );
 define( 'SYC_API_FEED_CACHE_TTL', 5 * MINUTE_IN_SECONDS );
+
+/**
+ * Aantal lege invoerrijen op het extra carrousels-scherm.
+ */
+define( 'SYC_CUSTOM_CARROUSEL_EMPTY_ROWS', 5 );
 
 /**
  * Register custom post type for carrousel items.
@@ -150,6 +156,20 @@ add_action( 'admin_notices', 'syc_render_manual_items_notice' );
 function syc_clear_feed_caches() {
 	delete_transient( SYC_API_FEED_CACHE_KEY );
 
+	$settings = get_option( 'syc_settings', array() );
+	if ( ! empty( $settings['custom_carrousels'] ) && is_array( $settings['custom_carrousels'] ) ) {
+		foreach ( $settings['custom_carrousels'] as $carrousel ) {
+			if ( empty( $carrousel['playlist_id'] ) ) {
+				continue;
+			}
+
+			$playlist_id = syc_extract_youtube_playlist_id( $carrousel['playlist_id'] );
+			if ( '' !== $playlist_id ) {
+				delete_transient( SYC_PLAYLIST_CACHE_PREFIX . md5( $playlist_id ) );
+			}
+		}
+	}
+
 	if ( function_exists( 'sg_cachepress_purge_cache' ) ) {
 		sg_cachepress_purge_cache();
 	}
@@ -249,15 +269,157 @@ function syc_register_settings() {
 			'type'              => 'array',
 			'sanitize_callback' => 'syc_sanitize_settings',
 			'default'           => array(
-				'api_key'        => '',
-				'channel_id'     => '',
-				'max_items'      => 8,
-				'link_overrides' => array(),
+				'api_key'           => '',
+				'channel_id'        => '',
+				'max_items'         => 8,
+				'link_overrides'    => array(),
+				'custom_carrousels' => array(),
 			),
 		)
 	);
 }
 add_action( 'admin_init', 'syc_register_settings' );
+
+/**
+ * Sanitize een carrousel slug.
+ *
+ * @param mixed $slug Ruwe slug.
+ * @return string
+ */
+function syc_sanitize_carrousel_slug( $slug ) {
+	$slug = sanitize_title( (string) $slug );
+	$slug = preg_replace( '/[^a-z0-9_-]/', '', $slug );
+
+	return trim( $slug, '-_' );
+}
+
+/**
+ * Sanitize een YouTube playlist-ID.
+ *
+ * @param mixed $playlist_id Ruwe playlist-ID.
+ * @return string
+ */
+function syc_sanitize_youtube_playlist_id( $playlist_id ) {
+	$playlist_id = trim( sanitize_text_field( (string) $playlist_id ) );
+
+	if ( ! preg_match( '/^[A-Za-z0-9_-]{10,80}$/', $playlist_id ) ) {
+		return '';
+	}
+
+	return $playlist_id;
+}
+
+/**
+ * Haal een YouTube playlist-ID uit een ID of URL.
+ *
+ * @param mixed $playlist_input Playlist-ID of URL.
+ * @return string
+ */
+function syc_extract_youtube_playlist_id( $playlist_input ) {
+	$playlist_input = trim( (string) $playlist_input );
+
+	if ( '' === $playlist_input ) {
+		return '';
+	}
+
+	$direct_id = syc_sanitize_youtube_playlist_id( $playlist_input );
+	if ( '' !== $direct_id ) {
+		return $direct_id;
+	}
+
+	$parts = wp_parse_url( $playlist_input );
+	if ( empty( $parts['host'] ) ) {
+		return '';
+	}
+
+	$host = strtolower( $parts['host'] );
+	if ( ! in_array( $host, array( 'youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be' ), true ) ) {
+		return '';
+	}
+
+	if ( empty( $parts['query'] ) ) {
+		return '';
+	}
+
+	parse_str( $parts['query'], $query );
+	if ( empty( $query['list'] ) ) {
+		return '';
+	}
+
+	return syc_sanitize_youtube_playlist_id( $query['list'] );
+}
+
+/**
+ * Sanitize extra handmatige carrousels.
+ *
+ * @param mixed $raw_carrousels Ruwe input.
+ * @return array
+ */
+function syc_sanitize_custom_carrousels( $raw_carrousels ) {
+	if ( ! is_array( $raw_carrousels ) ) {
+		return array();
+	}
+
+	$carrousels = array();
+
+	foreach ( $raw_carrousels as $raw_slug => $raw_carrousel ) {
+		if ( ! is_array( $raw_carrousel ) ) {
+			continue;
+		}
+
+		$name        = isset( $raw_carrousel['name'] ) ? sanitize_text_field( wp_unslash( $raw_carrousel['name'] ) ) : '';
+		$slug        = isset( $raw_carrousel['slug'] ) ? syc_sanitize_carrousel_slug( wp_unslash( $raw_carrousel['slug'] ) ) : '';
+		$playlist_id = isset( $raw_carrousel['playlist_id'] ) ? syc_extract_youtube_playlist_id( wp_unslash( $raw_carrousel['playlist_id'] ) ) : '';
+
+		if ( '' === $slug && is_string( $raw_slug ) ) {
+			$slug = syc_sanitize_carrousel_slug( $raw_slug );
+		}
+
+		if ( '' === $slug && '' !== $name ) {
+			$slug = syc_sanitize_carrousel_slug( $name );
+		}
+
+		if ( '' === $slug ) {
+			continue;
+		}
+
+		$items = array();
+		if ( ! empty( $raw_carrousel['items'] ) && is_array( $raw_carrousel['items'] ) ) {
+			foreach ( $raw_carrousel['items'] as $raw_item ) {
+				if ( ! is_array( $raw_item ) ) {
+					continue;
+				}
+
+				$title     = isset( $raw_item['title'] ) ? sanitize_text_field( wp_unslash( $raw_item['title'] ) ) : '';
+				$video_url = isset( $raw_item['video_url'] ) ? esc_url_raw( wp_unslash( $raw_item['video_url'] ) ) : '';
+				$link_url  = isset( $raw_item['link_url'] ) ? esc_url_raw( wp_unslash( $raw_item['link_url'] ) ) : '';
+
+				if ( '' === $video_url || '' === syc_extract_youtube_video_id( $video_url ) ) {
+					continue;
+				}
+
+				$items[] = array(
+					'title'     => '' !== $title ? $title : __( 'Video', 'scientias-youtube-carrousel' ),
+					'video_url' => $video_url,
+					'link_url'  => $link_url,
+				);
+			}
+		}
+
+		if ( empty( $items ) && '' === $playlist_id ) {
+			continue;
+		}
+
+		$carrousels[ $slug ] = array(
+			'name'        => '' !== $name ? $name : $slug,
+			'slug'        => $slug,
+			'playlist_id' => $playlist_id,
+			'items'       => $items,
+		);
+	}
+
+	return $carrousels;
+}
 
 /**
  * Sanitize link overrides voor YouTube feed-items.
@@ -467,19 +629,21 @@ function syc_maybe_import_link_overrides_csv( $settings ) {
  */
 function syc_normalize_settings( $settings ) {
 	$defaults = array(
-		'api_key'        => '',
-		'channel_id'     => '',
-		'max_items'      => 8,
-		'link_overrides' => array(),
+		'api_key'           => '',
+		'channel_id'        => '',
+		'max_items'         => 8,
+		'link_overrides'    => array(),
+		'custom_carrousels' => array(),
 	);
 
 	$settings = wp_parse_args( (array) $settings, $defaults );
 
 	return array(
-		'api_key'        => trim( sanitize_text_field( $settings['api_key'] ) ),
-		'channel_id'     => trim( sanitize_text_field( $settings['channel_id'] ) ),
-		'max_items'      => max( 1, absint( $settings['max_items'] ) ),
-		'link_overrides' => syc_sanitize_link_overrides( $settings['link_overrides'] ),
+		'api_key'           => trim( sanitize_text_field( $settings['api_key'] ) ),
+		'channel_id'        => trim( sanitize_text_field( $settings['channel_id'] ) ),
+		'max_items'         => max( 1, absint( $settings['max_items'] ) ),
+		'link_overrides'    => syc_sanitize_link_overrides( $settings['link_overrides'] ),
+		'custom_carrousels' => syc_sanitize_custom_carrousels( $settings['custom_carrousels'] ),
 	);
 }
 
@@ -497,7 +661,8 @@ function syc_sanitize_settings( $input ) {
 	$output['api_key']        = '' !== $new_api_key ? $new_api_key : $old_settings['api_key'];
 	$output['channel_id']     = isset( $input['channel_id'] ) ? trim( sanitize_text_field( $input['channel_id'] ) ) : '';
 	$output['max_items']      = isset( $input['max_items'] ) ? max( 1, absint( $input['max_items'] ) ) : 8;
-	$output['link_overrides'] = isset( $input['link_overrides'] ) ? syc_sanitize_link_overrides( $input['link_overrides'] ) : array();
+	$output['link_overrides']    = isset( $input['link_overrides'] ) ? syc_sanitize_link_overrides( $input['link_overrides'] ) : $old_settings['link_overrides'];
+	$output['custom_carrousels'] = isset( $input['custom_carrousels'] ) ? syc_sanitize_custom_carrousels( $input['custom_carrousels'] ) : $old_settings['custom_carrousels'];
 
 	if ( $old_settings !== $output ) {
 		syc_clear_feed_caches();
@@ -539,6 +704,15 @@ function syc_add_settings_page() {
 
 	add_submenu_page(
 		'syc-settings',
+		__( 'Extra carrousels', 'scientias-youtube-carrousel' ),
+		__( 'Extra carrousels', 'scientias-youtube-carrousel' ),
+		'manage_options',
+		'syc-custom-carrousels',
+		'syc_render_custom_carrousels_page'
+	);
+
+	add_submenu_page(
+		'syc-settings',
 		__( 'Losse video-items', 'scientias-youtube-carrousel' ),
 		__( 'Losse video-items', 'scientias-youtube-carrousel' ),
 		'edit_posts',
@@ -554,6 +728,32 @@ add_action( 'admin_menu', 'syc_add_settings_page' );
  */
 function syc_get_settings() {
 	return syc_normalize_settings( get_option( 'syc_settings', array() ) );
+}
+
+/**
+ * Render verborgen velden om extra carrousels te behouden op andere settings-formulieren.
+ *
+ * @param array $custom_carrousels Extra carrousels.
+ */
+function syc_render_hidden_custom_carrousels_fields( $custom_carrousels ) {
+	if ( empty( $custom_carrousels ) || ! is_array( $custom_carrousels ) ) {
+		return;
+	}
+
+	foreach ( $custom_carrousels as $slug => $carrousel ) :
+		$items       = ! empty( $carrousel['items'] ) && is_array( $carrousel['items'] ) ? $carrousel['items'] : array();
+		$playlist_id = isset( $carrousel['playlist_id'] ) ? $carrousel['playlist_id'] : '';
+		?>
+		<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][name]" value="<?php echo esc_attr( $carrousel['name'] ); ?>" />
+		<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][slug]" value="<?php echo esc_attr( $slug ); ?>" />
+		<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][playlist_id]" value="<?php echo esc_attr( $playlist_id ); ?>" />
+		<?php foreach ( $items as $index => $item ) : ?>
+			<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][items][<?php echo esc_attr( $index ); ?>][title]" value="<?php echo esc_attr( $item['title'] ); ?>" />
+			<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][items][<?php echo esc_attr( $index ); ?>][video_url]" value="<?php echo esc_url( $item['video_url'] ); ?>" />
+			<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][items][<?php echo esc_attr( $index ); ?>][link_url]" value="<?php echo esc_url( $item['link_url'] ); ?>" />
+		<?php endforeach; ?>
+		<?php
+	endforeach;
 }
 
 /**
@@ -588,6 +788,7 @@ function syc_render_settings_page() {
 			<?php foreach ( $settings['link_overrides'] as $video_id => $url ) : ?>
 				<input type="hidden" name="syc_settings[link_overrides][<?php echo esc_attr( $video_id ); ?>]" value="<?php echo esc_url( $url ); ?>" />
 			<?php endforeach; ?>
+			<?php syc_render_hidden_custom_carrousels_fields( $settings['custom_carrousels'] ); ?>
 			<table class="form-table" role="presentation">
 				<tr>
 					<th scope="row">
@@ -775,6 +976,7 @@ function syc_render_link_overrides_page() {
 			<input type="hidden" name="syc_settings[api_key]" value="" />
 			<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
 			<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
+			<?php syc_render_hidden_custom_carrousels_fields( $settings['custom_carrousels'] ); ?>
 			<?php foreach ( $link_overrides as $video_id => $url ) : ?>
 				<input type="hidden" name="syc_settings[link_overrides][existing_<?php echo esc_attr( md5( $video_id ) ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" />
 				<input type="hidden" name="syc_settings[link_overrides][existing_<?php echo esc_attr( md5( $video_id ) ); ?>][url]" value="<?php echo esc_url( $url ); ?>" />
@@ -848,6 +1050,7 @@ function syc_render_link_overrides_page() {
 				<input type="hidden" name="syc_settings[api_key]" value="" />
 				<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
 				<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
+				<?php syc_render_hidden_custom_carrousels_fields( $settings['custom_carrousels'] ); ?>
 				<?php foreach ( $link_overrides as $video_id => $url ) : ?>
 					<?php if ( isset( $paged_overrides[ $video_id ] ) ) : ?>
 						<?php continue; ?>
@@ -941,6 +1144,123 @@ function syc_render_link_overrides_page() {
 				</tbody>
 			</table>
 		<?php endif; ?>
+	</div>
+	<?php
+}
+
+/**
+ * Render velden voor een extra handmatige carrousel.
+ *
+ * @param string $field_key Veldsleutel.
+ * @param array  $carrousel Carrouseldata.
+ * @param bool   $is_new Nieuwe carrousel.
+ */
+function syc_render_custom_carrousel_fields( $field_key, $carrousel, $is_new = false ) {
+	$name        = isset( $carrousel['name'] ) ? $carrousel['name'] : '';
+	$slug        = isset( $carrousel['slug'] ) ? $carrousel['slug'] : '';
+	$playlist_id = isset( $carrousel['playlist_id'] ) ? $carrousel['playlist_id'] : '';
+	$items       = ! empty( $carrousel['items'] ) && is_array( $carrousel['items'] ) ? array_values( $carrousel['items'] ) : array();
+	$rows        = $is_new ? SYC_CUSTOM_CARROUSEL_EMPTY_ROWS : count( $items ) + SYC_CUSTOM_CARROUSEL_EMPTY_ROWS;
+	$rows        = max( SYC_CUSTOM_CARROUSEL_EMPTY_ROWS, $rows );
+	?>
+	<table class="form-table" role="presentation" style="max-width: 900px;">
+		<tr>
+			<th scope="row"><label for="syc_custom_<?php echo esc_attr( $field_key ); ?>_name"><?php esc_html_e( 'Naam', 'scientias-youtube-carrousel' ); ?></label></th>
+			<td>
+				<input type="text" id="syc_custom_<?php echo esc_attr( $field_key ); ?>_name" name="syc_settings[custom_carrousels][<?php echo esc_attr( $field_key ); ?>][name]" value="<?php echo esc_attr( $name ); ?>" class="regular-text" placeholder="Ruimtevaart" />
+			</td>
+		</tr>
+		<tr>
+			<th scope="row"><label for="syc_custom_<?php echo esc_attr( $field_key ); ?>_slug"><?php esc_html_e( 'Shortcode-naam', 'scientias-youtube-carrousel' ); ?></label></th>
+			<td>
+				<input type="text" id="syc_custom_<?php echo esc_attr( $field_key ); ?>_slug" name="syc_settings[custom_carrousels][<?php echo esc_attr( $field_key ); ?>][slug]" value="<?php echo esc_attr( $slug ); ?>" class="regular-text" placeholder="ruimtevaart" />
+				<p class="description"><?php esc_html_e( 'Gebruik kleine letters, cijfers en streepjes. Voorbeeld shortcode: [scientias_youtube_carrousel name="ruimtevaart"]', 'scientias-youtube-carrousel' ); ?></p>
+			</td>
+		</tr>
+		<tr>
+			<th scope="row"><label for="syc_custom_<?php echo esc_attr( $field_key ); ?>_playlist"><?php esc_html_e( 'YouTube playlist', 'scientias-youtube-carrousel' ); ?></label></th>
+			<td>
+				<input type="text" id="syc_custom_<?php echo esc_attr( $field_key ); ?>_playlist" name="syc_settings[custom_carrousels][<?php echo esc_attr( $field_key ); ?>][playlist_id]" value="<?php echo esc_attr( $playlist_id ); ?>" class="regular-text" placeholder="PL... of https://www.youtube.com/playlist?list=..." />
+				<p class="description"><?php esc_html_e( 'Optioneel. Als dit is ingevuld, toont deze extra carrousel video’s uit de playlist via de opgeslagen YouTube API-key. De handmatige rijen hieronder blijven fallback als de playlist niet geladen kan worden.', 'scientias-youtube-carrousel' ); ?></p>
+			</td>
+		</tr>
+	</table>
+
+	<h4><?php esc_html_e( 'Handmatige video’s', 'scientias-youtube-carrousel' ); ?></h4>
+
+	<table class="widefat striped" style="max-width: 1200px; margin-top: 1rem;">
+		<thead>
+			<tr>
+				<th style="width: 26%;"><?php esc_html_e( 'Titel', 'scientias-youtube-carrousel' ); ?></th>
+				<th style="width: 37%;"><?php esc_html_e( 'YouTube video-URL', 'scientias-youtube-carrousel' ); ?></th>
+				<th><?php esc_html_e( 'Pagina-URL', 'scientias-youtube-carrousel' ); ?></th>
+			</tr>
+		</thead>
+		<tbody>
+			<?php for ( $index = 0; $index < $rows; $index++ ) : ?>
+				<?php $item = isset( $items[ $index ] ) ? $items[ $index ] : array( 'title' => '', 'video_url' => '', 'link_url' => '' ); ?>
+				<tr>
+					<td>
+						<input type="text" name="syc_settings[custom_carrousels][<?php echo esc_attr( $field_key ); ?>][items][<?php echo esc_attr( $index ); ?>][title]" value="<?php echo esc_attr( $item['title'] ); ?>" class="large-text" />
+					</td>
+					<td>
+						<input type="url" name="syc_settings[custom_carrousels][<?php echo esc_attr( $field_key ); ?>][items][<?php echo esc_attr( $index ); ?>][video_url]" value="<?php echo esc_url( $item['video_url'] ); ?>" class="large-text" placeholder="https://www.youtube.com/watch?v=..." />
+					</td>
+					<td>
+						<input type="url" name="syc_settings[custom_carrousels][<?php echo esc_attr( $field_key ); ?>][items][<?php echo esc_attr( $index ); ?>][link_url]" value="<?php echo esc_url( $item['link_url'] ); ?>" class="large-text" placeholder="https://scientias.nl/..." />
+					</td>
+				</tr>
+			<?php endfor; ?>
+		</tbody>
+	</table>
+	<p class="description"><?php esc_html_e( 'Rijen zonder geldige YouTube-URL worden genegeerd. Maak de playlist én alle video-URL’s leeg om deze carrousel te verwijderen.', 'scientias-youtube-carrousel' ); ?></p>
+	<?php
+}
+
+/**
+ * Render de extra carrousels pagina.
+ */
+function syc_render_custom_carrousels_page() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return;
+	}
+
+	$settings          = syc_get_settings();
+	$custom_carrousels = ! empty( $settings['custom_carrousels'] ) && is_array( $settings['custom_carrousels'] ) ? $settings['custom_carrousels'] : array();
+	?>
+	<div class="wrap">
+		<h1><?php esc_html_e( 'Extra carrousels', 'scientias-youtube-carrousel' ); ?></h1>
+		<p><?php esc_html_e( 'Maak video-carrousels voor losse onderwerpen. Vul een YouTube-playlist in of beheer zelf losse video-URL’s en pagina-URL’s.', 'scientias-youtube-carrousel' ); ?></p>
+
+		<form method="post" action="options.php">
+			<?php settings_fields( 'syc_settings_group' ); ?>
+			<input type="hidden" name="syc_settings[api_key]" value="" />
+			<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
+			<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
+			<?php foreach ( $settings['link_overrides'] as $video_id => $url ) : ?>
+				<input type="hidden" name="syc_settings[link_overrides][<?php echo esc_attr( $video_id ); ?>]" value="<?php echo esc_url( $url ); ?>" />
+			<?php endforeach; ?>
+
+			<h2><?php esc_html_e( 'Nieuwe carrousel', 'scientias-youtube-carrousel' ); ?></h2>
+			<?php syc_render_custom_carrousel_fields( 'new', array(), true ); ?>
+
+			<?php if ( ! empty( $custom_carrousels ) ) : ?>
+				<hr />
+				<h2><?php esc_html_e( 'Bestaande carrousels', 'scientias-youtube-carrousel' ); ?></h2>
+				<?php foreach ( $custom_carrousels as $slug => $carrousel ) : ?>
+					<div style="margin: 1.5rem 0 2rem; padding: 1rem; background: #fff; border: 1px solid #c3c4c7;">
+						<h3 style="margin-top: 0;"><?php echo esc_html( $carrousel['name'] ); ?></h3>
+						<p>
+							<?php esc_html_e( 'Shortcode:', 'scientias-youtube-carrousel' ); ?>
+							<code>[scientias_youtube_carrousel name="<?php echo esc_attr( $slug ); ?>"]</code>
+						</p>
+						<?php syc_render_custom_carrousel_fields( $slug, $carrousel ); ?>
+					</div>
+				<?php endforeach; ?>
+			<?php endif; ?>
+
+			<?php submit_button( __( 'Carrousels opslaan', 'scientias-youtube-carrousel' ) ); ?>
+		</form>
 	</div>
 	<?php
 }
@@ -1193,9 +1513,193 @@ function syc_get_api_shorts_items() {
 }
 
 /**
+ * Haal items op uit een YouTube playlist via de YouTube Data API.
+ *
+ * @param string $playlist_id YouTube playlist-ID.
+ * @return array|WP_Error
+ */
+function syc_get_api_playlist_items( $playlist_id ) {
+	$settings    = syc_get_settings();
+	$playlist_id = syc_extract_youtube_playlist_id( $playlist_id );
+
+	if ( '' === $playlist_id ) {
+		return new WP_Error( 'syc_invalid_playlist_id', __( 'Ongeldige YouTube playlist-ID.', 'scientias-youtube-carrousel' ) );
+	}
+
+	if ( empty( $settings['api_key'] ) ) {
+		return new WP_Error( 'syc_missing_api_key', __( 'YouTube API sleutel ontbreekt.', 'scientias-youtube-carrousel' ) );
+	}
+
+	$cache_key = SYC_PLAYLIST_CACHE_PREFIX . md5( $playlist_id );
+	$cached    = get_transient( $cache_key );
+	if ( is_array( $cached ) ) {
+		return $cached;
+	}
+
+	$max_results = min( max( 1, absint( $settings['max_items'] ) ), 50 );
+	$url         = add_query_arg(
+		array(
+			'part'       => 'snippet',
+			'playlistId' => $playlist_id,
+			'maxResults' => $max_results,
+			'key'        => $settings['api_key'],
+		),
+		'https://www.googleapis.com/youtube/v3/playlistItems'
+	);
+
+	$response = wp_remote_get(
+		$url,
+		array(
+			'timeout' => 10,
+		)
+	);
+
+	if ( is_wp_error( $response ) ) {
+		return $response;
+	}
+
+	$code = wp_remote_retrieve_response_code( $response );
+	if ( 200 !== $code ) {
+		return new WP_Error( 'syc_playlist_api_http_error', sprintf( __( 'YouTube API fout: HTTP %d', 'scientias-youtube-carrousel' ), (int) $code ) );
+	}
+
+	$body = wp_remote_retrieve_body( $response );
+	$data = json_decode( $body, true );
+
+	if ( ! is_array( $data ) || empty( $data['items'] ) ) {
+		return new WP_Error( 'syc_playlist_api_empty', __( 'Geen items gevonden in de YouTube playlist.', 'scientias-youtube-carrousel' ) );
+	}
+
+	$items = array();
+
+	foreach ( $data['items'] as $item ) {
+		if ( empty( $item['snippet']['resourceId']['videoId'] ) ) {
+			continue;
+		}
+
+		$video_id = $item['snippet']['resourceId']['videoId'];
+		$title    = isset( $item['snippet']['title'] ) ? $item['snippet']['title'] : '';
+		$thumb    = '';
+
+		if ( ! empty( $item['snippet']['thumbnails']['maxres']['url'] ) ) {
+			$thumb = $item['snippet']['thumbnails']['maxres']['url'];
+		} elseif ( ! empty( $item['snippet']['thumbnails']['high']['url'] ) ) {
+			$thumb = $item['snippet']['thumbnails']['high']['url'];
+		} elseif ( ! empty( $item['snippet']['thumbnails']['medium']['url'] ) ) {
+			$thumb = $item['snippet']['thumbnails']['medium']['url'];
+		}
+
+		if ( '' === $thumb ) {
+			$thumb = syc_get_youtube_thumbnail_url( $video_id );
+		}
+
+		$items[] = array(
+			'video_id' => $video_id,
+			'title'    => $title,
+			'thumb'    => $thumb,
+		);
+	}
+
+	if ( empty( $items ) ) {
+		return new WP_Error( 'syc_playlist_api_empty_items', __( 'Er zijn geen geldige playlist-items gevonden.', 'scientias-youtube-carrousel' ) );
+	}
+
+	set_transient( $cache_key, $items, SYC_API_FEED_CACHE_TTL );
+
+	return $items;
+}
+
+/**
+ * Kort een titel af voor carrouselkaarten.
+ *
+ * @param string $title Titel.
+ * @return string
+ */
+function syc_get_display_title( $title ) {
+	$title = (string) $title;
+
+	if ( function_exists( 'mb_strlen' ) && function_exists( 'mb_substr' ) ) {
+		return mb_strlen( $title ) > 50 ? mb_substr( $title, 0, 50 ) . '…' : $title;
+	}
+
+	return strlen( $title ) > 50 ? substr( $title, 0, 50 ) . '…' : $title;
+}
+
+/**
+ * Render carrousel markup voor genormaliseerde items.
+ *
+ * @param array  $items Items met title, video_url, thumb_url en link_url.
+ * @param string $title Sectietitel.
+ * @return string
+ */
+function syc_render_carrousel_items( $items, $title ) {
+	if ( empty( $items ) ) {
+		return '';
+	}
+
+	wp_enqueue_style( 'syc-carrousel-style' );
+	wp_enqueue_script( 'syc-carrousel-script' );
+
+	ob_start();
+
+	$unique_id = uniqid( 'syc_', false );
+	?>
+	<div class="syc-carrousel syc-video-section" id="<?php echo esc_attr( $unique_id ); ?>">
+		<div class="syc-carrousel-header syc-section-header">
+			<?php if ( ! empty( $title ) ) : ?>
+				<h2 class="syc-carrousel-title"><?php echo esc_html( $title ); ?></h2>
+			<?php endif; ?>
+			<div class="syc-header-nav">
+				<button type="button" class="syc-nav syc-nav-prev" aria-label="<?php esc_attr_e( 'Vorige video', 'scientias-youtube-carrousel' ); ?>">&lsaquo;</button>
+				<button type="button" class="syc-nav syc-nav-next" aria-label="<?php esc_attr_e( 'Volgende video', 'scientias-youtube-carrousel' ); ?>">&rsaquo;</button>
+			</div>
+		</div>
+
+		<div class="syc-carrousel-wrapper">
+			<div class="syc-items" role="list" tabindex="0" aria-label="<?php esc_attr_e( 'Video carrousel', 'scientias-youtube-carrousel' ); ?>">
+				<?php foreach ( $items as $item ) : ?>
+					<?php
+					$title_value   = isset( $item['title'] ) ? $item['title'] : __( 'Video', 'scientias-youtube-carrousel' );
+					$video_url     = isset( $item['video_url'] ) ? $item['video_url'] : '';
+					$thumb_url     = isset( $item['thumb_url'] ) ? $item['thumb_url'] : '';
+					$link_url      = isset( $item['link_url'] ) ? $item['link_url'] : '';
+					$display_title = syc_get_display_title( $title_value );
+					?>
+					<div class="syc-item" role="listitem">
+						<button
+							type="button"
+							class="syc-video-button"
+							data-video-url="<?php echo esc_url( $video_url ); ?>"
+							data-thumb-url="<?php echo esc_url( $thumb_url ? $thumb_url : '' ); ?>"
+							data-title="<?php echo esc_attr( $title_value ); ?>"
+							aria-label="<?php echo esc_attr( $title_value ); ?>"
+						>
+							<div class="syc-media" <?php echo $thumb_url ? 'style="background-image:url(' . esc_url( $thumb_url ) . ');"' : ''; ?>>
+								<?php if ( $thumb_url ) : ?>
+									<img class="syc-img" src="<?php echo esc_url( $thumb_url ); ?>" alt="" loading="lazy" decoding="async" />
+								<?php endif; ?>
+								<span class="syc-play" aria-hidden="true"></span>
+							</div>
+						</button>
+						<?php if ( ! empty( $link_url ) ) : ?>
+							<a class="syc-item-title syc-item-link" href="<?php echo esc_url( $link_url ); ?>"><?php echo esc_html( $display_title ); ?></a>
+						<?php else : ?>
+							<div class="syc-item-title"><?php echo esc_html( $display_title ); ?></div>
+						<?php endif; ?>
+					</div>
+				<?php endforeach; ?>
+			</div>
+		</div>
+	</div>
+	<?php
+
+	return ob_get_clean();
+}
+
+/**
  * Shortcode output.
  *
- * Gebruik: [scientias_youtube_carrousel title="Our work in two minutes"]
+ * Gebruik: [scientias_youtube_carrousel] of [scientias_youtube_carrousel name="ruimtevaart"]
  *
  * @param array $atts Shortcode attributes.
  * @return string
@@ -1205,23 +1709,76 @@ function syc_render_carrousel_shortcode( $atts ) {
 		array(
 			'title' => __( 'Video', 'scientias-youtube-carrousel' ),
 			'limit' => -1,
+			'name'  => '',
 		),
 		$atts,
 		'scientias_youtube_carrousel'
 	);
 
-	wp_enqueue_style( 'syc-carrousel-style' );
-	wp_enqueue_script( 'syc-carrousel-script' );
-
-	$use_api        = false;
 	$items          = array();
 	$settings       = syc_get_settings();
 	$link_overrides = ! empty( $settings['link_overrides'] ) && is_array( $settings['link_overrides'] ) ? $settings['link_overrides'] : array();
+	$name           = syc_sanitize_carrousel_slug( $atts['name'] );
+
+	if ( '' !== $name ) {
+		if ( empty( $settings['custom_carrousels'][ $name ] ) ) {
+			return '';
+		}
+
+		$carrousel = $settings['custom_carrousels'][ $name ];
+
+		if ( ! empty( $carrousel['playlist_id'] ) ) {
+			$playlist_items = syc_get_api_playlist_items( $carrousel['playlist_id'] );
+			if ( ! is_wp_error( $playlist_items ) && ! empty( $playlist_items ) ) {
+				foreach ( $playlist_items as $item ) {
+					$video_id  = $item['video_id'];
+					$thumb_url = ! empty( $item['thumb'] ) ? $item['thumb'] : syc_get_youtube_thumbnail_url( $video_id );
+
+					$items[] = array(
+						'title'     => $item['title'],
+						'video_url' => 'https://www.youtube.com/watch?v=' . $video_id,
+						'thumb_url' => $thumb_url,
+						'link_url'  => '',
+					);
+				}
+			}
+		}
+
+		if ( empty( $items ) && ! empty( $carrousel['items'] ) ) {
+			foreach ( $carrousel['items'] as $item ) {
+				$video_id = syc_extract_youtube_video_id( $item['video_url'] );
+				if ( '' === $video_id ) {
+					continue;
+				}
+
+				$items[] = array(
+					'title'     => $item['title'],
+					'video_url' => $item['video_url'],
+					'thumb_url' => syc_get_youtube_thumbnail_url( $video_id ),
+					'link_url'  => $item['link_url'],
+				);
+			}
+		}
+
+		$default_title = ! empty( $carrousel['name'] ) ? $carrousel['name'] : __( 'Video', 'scientias-youtube-carrousel' );
+		$title         = __( 'Video', 'scientias-youtube-carrousel' ) === $atts['title'] ? $default_title : $atts['title'];
+
+		return syc_render_carrousel_items( $items, $title );
+	}
 
 	$api_items = syc_get_api_shorts_items();
 	if ( ! is_wp_error( $api_items ) && ! empty( $api_items ) ) {
-		$use_api = true;
-		$items   = $api_items;
+		foreach ( $api_items as $item ) {
+			$video_id  = $item['video_id'];
+			$thumb_url = ! empty( $item['thumb'] ) ? $item['thumb'] : syc_get_youtube_thumbnail_url( $video_id );
+
+			$items[] = array(
+				'title'     => $item['title'],
+				'video_url' => 'https://www.youtube.com/watch?v=' . $video_id,
+				'thumb_url' => $thumb_url,
+				'link_url'  => isset( $link_overrides[ $video_id ] ) ? $link_overrides[ $video_id ] : '',
+			);
+		}
 	} else {
 		// Vallen terug op handmatig beheerde items.
 		$query_args = array(
@@ -1238,121 +1795,33 @@ function syc_render_carrousel_shortcode( $atts ) {
 			return '';
 		}
 
-		$items = $videos;
+		while ( $videos->have_posts() ) {
+			$videos->the_post();
+
+			$video_url = get_post_meta( get_the_ID(), '_syc_video_url', true );
+			if ( empty( $video_url ) ) {
+				continue;
+			}
+
+			$link_url = get_post_meta( get_the_ID(), '_syc_link_url', true );
+
+			$thumb_url = get_the_post_thumbnail_url( get_the_ID(), 'large' );
+			if ( ! $thumb_url ) {
+				$video_id  = syc_extract_youtube_video_id( $video_url );
+				$thumb_url = syc_get_youtube_thumbnail_url( $video_id );
+			}
+
+			$items[] = array(
+				'title'     => get_the_title(),
+				'video_url' => $video_url,
+				'thumb_url' => $thumb_url,
+				'link_url'  => $link_url,
+			);
+		}
+
+		wp_reset_postdata();
 	}
 
-	ob_start();
-
-	$unique_id = uniqid( 'syc_', false );
-	?>
-	<div class="syc-carrousel syc-video-section" id="<?php echo esc_attr( $unique_id ); ?>">
-		<div class="syc-carrousel-header syc-section-header">
-			<?php if ( ! empty( $atts['title'] ) ) : ?>
-				<h2 class="syc-carrousel-title"><?php echo esc_html( $atts['title'] ); ?></h2>
-			<?php endif; ?>
-			<div class="syc-header-nav">
-				<button type="button" class="syc-nav syc-nav-prev" aria-label="<?php esc_attr_e( 'Vorige video', 'scientias-youtube-carrousel' ); ?>">&lsaquo;</button>
-				<button type="button" class="syc-nav syc-nav-next" aria-label="<?php esc_attr_e( 'Volgende video', 'scientias-youtube-carrousel' ); ?>">&rsaquo;</button>
-			</div>
-		</div>
-
-		<div class="syc-carrousel-wrapper">
-			<div class="syc-items" role="list" tabindex="0" aria-label="<?php esc_attr_e( 'Video carrousel', 'scientias-youtube-carrousel' ); ?>">
-				<?php if ( $use_api ) : ?>
-					<?php foreach ( $items as $item ) : ?>
-						<?php
-						$video_id  = $item['video_id'];
-						$title     = $item['title'];
-						$thumb_url = ! empty( $item['thumb'] ) ? $item['thumb'] : syc_get_youtube_thumbnail_url( $video_id );
-						$video_url = 'https://www.youtube.com/watch?v=' . $video_id;
-						$link_url  = isset( $link_overrides[ $video_id ] ) ? $link_overrides[ $video_id ] : '';
-
-						if ( function_exists( 'mb_strlen' ) && function_exists( 'mb_substr' ) ) {
-							$display_title = mb_strlen( $title ) > 50 ? mb_substr( $title, 0, 50 ) . '…' : $title;
-						} else {
-							$display_title = strlen( $title ) > 50 ? substr( $title, 0, 50 ) . '…' : $title;
-						}
-						?>
-						<div class="syc-item" role="listitem">
-							<button
-								type="button"
-								class="syc-video-button"
-								data-video-url="<?php echo esc_url( $video_url ); ?>"
-								data-thumb-url="<?php echo esc_url( $thumb_url ? $thumb_url : '' ); ?>"
-								data-title="<?php echo esc_attr( $title ); ?>"
-								aria-label="<?php echo esc_attr( $title ); ?>"
-							>
-								<div class="syc-media" <?php echo $thumb_url ? 'style="background-image:url(' . esc_url( $thumb_url ) . ');"' : ''; ?>>
-									<?php if ( $thumb_url ) : ?>
-										<img class="syc-img" src="<?php echo esc_url( $thumb_url ); ?>" alt="" loading="lazy" decoding="async" />
-									<?php endif; ?>
-									<span class="syc-play" aria-hidden="true"></span>
-								</div>
-							</button>
-							<?php if ( ! empty( $link_url ) ) : ?>
-								<a class="syc-item-title syc-item-link" href="<?php echo esc_url( $link_url ); ?>"><?php echo esc_html( $display_title ); ?></a>
-							<?php else : ?>
-								<div class="syc-item-title"><?php echo esc_html( $display_title ); ?></div>
-							<?php endif; ?>
-						</div>
-					<?php endforeach; ?>
-				<?php else : ?>
-					<?php
-					while ( $items->have_posts() ) :
-						$items->the_post();
-
-						$video_url = get_post_meta( get_the_ID(), '_syc_video_url', true );
-						if ( empty( $video_url ) ) {
-							continue;
-						}
-
-						$link_url = get_post_meta( get_the_ID(), '_syc_link_url', true );
-
-						$thumb_url = get_the_post_thumbnail_url( get_the_ID(), 'large' );
-						if ( ! $thumb_url ) {
-							$video_id = syc_extract_youtube_video_id( $video_url );
-							$thumb_url = syc_get_youtube_thumbnail_url( $video_id );
-						}
-
-						$title        = get_the_title();
-						if ( function_exists( 'mb_strlen' ) && function_exists( 'mb_substr' ) ) {
-							$display_title = mb_strlen( $title ) > 50 ? mb_substr( $title, 0, 50 ) . '…' : $title;
-						} else {
-							$display_title = strlen( $title ) > 50 ? substr( $title, 0, 50 ) . '…' : $title;
-						}
-						?>
-						<div class="syc-item" role="listitem">
-							<button
-								type="button"
-								class="syc-video-button"
-								data-video-url="<?php echo esc_url( $video_url ); ?>"
-								data-thumb-url="<?php echo esc_url( $thumb_url ? $thumb_url : '' ); ?>"
-								data-title="<?php echo esc_attr( $title ); ?>"
-								aria-label="<?php echo esc_attr( $title ); ?>"
-							>
-								<div class="syc-media" <?php echo $thumb_url ? 'style="background-image:url(' . esc_url( $thumb_url ) . ');"' : ''; ?>>
-									<?php if ( $thumb_url ) : ?>
-										<img class="syc-img" src="<?php echo esc_url( $thumb_url ); ?>" alt="" loading="lazy" decoding="async" />
-									<?php endif; ?>
-									<span class="syc-play" aria-hidden="true"></span>
-								</div>
-							</button>
-							<?php if ( ! empty( $link_url ) ) : ?>
-								<a class="syc-item-title syc-item-link" href="<?php echo esc_url( $link_url ); ?>"><?php echo esc_html( $display_title ); ?></a>
-							<?php else : ?>
-								<div class="syc-item-title"><?php echo esc_html( $display_title ); ?></div>
-							<?php endif; ?>
-						</div>
-						<?php
-					endwhile;
-					wp_reset_postdata();
-					?>
-				<?php endif; ?>
-			</div>
-		</div>
-	</div>
-	<?php
-
-	return ob_get_clean();
+	return syc_render_carrousel_items( $items, $atts['title'] );
 }
 add_shortcode( 'scientias_youtube_carrousel', 'syc_render_carrousel_shortcode' );

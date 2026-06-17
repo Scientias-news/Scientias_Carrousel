@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.9 - 2026-06-17
+
+- Added optional YouTube playlist support to extra carrousels.
+- Added per-playlist API caching with manual video rows as fallback when a playlist cannot be loaded.
+
+## 1.0.8 - 2026-06-17
+
+- Added manually managed extra carrousels for topic-specific video selections.
+- Added `[scientias_youtube_carrousel name="slug"]` support for rendering an extra carrousel without using the YouTube feed.
+
 ## 1.0.7 - 2026-06-15
 
 - Added CSV import for Link overrides with merge and overwrite modes, supporting comma and semicolon delimiters.
