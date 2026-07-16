@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scientias YouTube Carrousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.0.9
+ * Version:     1.1.0
  * Author:      Scientias
  * Text Domain: scientias-youtube-carrousel
  */
@@ -11,10 +11,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.0.9' );
+define( 'SYC_VERSION', '1.1.0' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
 define( 'SYC_PLAYLIST_CACHE_PREFIX', 'syc_playlist_cache_' );
 define( 'SYC_API_FEED_CACHE_TTL', 5 * MINUTE_IN_SECONDS );
+define( 'SYC_AUTODRAFT_MAP_OPTION', 'syc_autodraft_map' );
+define( 'SYC_AUTODRAFT_LOCK_KEY', 'syc_autodraft_lock' );
 
 /**
  * Aantal lege invoerrijen op het extra carrousels-scherm.
@@ -632,6 +634,7 @@ function syc_normalize_settings( $settings ) {
 		'api_key'           => '',
 		'channel_id'        => '',
 		'max_items'         => 8,
+		'auto_draft'        => 0,
 		'link_overrides'    => array(),
 		'custom_carrousels' => array(),
 	);
@@ -642,6 +645,7 @@ function syc_normalize_settings( $settings ) {
 		'api_key'           => trim( sanitize_text_field( $settings['api_key'] ) ),
 		'channel_id'        => trim( sanitize_text_field( $settings['channel_id'] ) ),
 		'max_items'         => max( 1, absint( $settings['max_items'] ) ),
+		'auto_draft'        => ! empty( $settings['auto_draft'] ) ? 1 : 0,
 		'link_overrides'    => syc_sanitize_link_overrides( $settings['link_overrides'] ),
 		'custom_carrousels' => syc_sanitize_custom_carrousels( $settings['custom_carrousels'] ),
 	);
@@ -661,6 +665,7 @@ function syc_sanitize_settings( $input ) {
 	$output['api_key']        = '' !== $new_api_key ? $new_api_key : $old_settings['api_key'];
 	$output['channel_id']     = isset( $input['channel_id'] ) ? trim( sanitize_text_field( $input['channel_id'] ) ) : '';
 	$output['max_items']      = isset( $input['max_items'] ) ? max( 1, absint( $input['max_items'] ) ) : 8;
+	$output['auto_draft']     = isset( $input['auto_draft'] ) ? ( ! empty( $input['auto_draft'] ) ? 1 : 0 ) : $old_settings['auto_draft'];
 	$output['link_overrides']    = isset( $input['link_overrides'] ) ? syc_sanitize_link_overrides( $input['link_overrides'] ) : $old_settings['link_overrides'];
 	$output['custom_carrousels'] = isset( $input['custom_carrousels'] ) ? syc_sanitize_custom_carrousels( $input['custom_carrousels'] ) : $old_settings['custom_carrousels'];
 
@@ -847,6 +852,28 @@ function syc_render_settings_page() {
 						</p>
 					</td>
 				</tr>
+
+				<tr>
+					<th scope="row">
+						<?php esc_html_e( 'Automatische concept-berichten', 'scientias-youtube-carrousel' ); ?>
+					</th>
+					<td>
+						<input type="hidden" name="syc_settings[auto_draft]" value="0" />
+						<label for="syc_settings_auto_draft">
+							<input
+								type="checkbox"
+								id="syc_settings_auto_draft"
+								name="syc_settings[auto_draft]"
+								value="1"
+								<?php checked( ! empty( $settings['auto_draft'] ) ); ?>
+							/>
+							<?php esc_html_e( 'Maak automatisch een concept-bericht aan voor nieuwe shorts in de feed', 'scientias-youtube-carrousel' ); ?>
+						</label>
+						<p class="description">
+							<?php esc_html_e( 'Voor elke nieuwe short in de YouTube-feed wordt een concept-bericht aangemaakt met de videotitel en een embed. Zodra de redacteur het bericht publiceert, wordt de link-override automatisch gevuld met de artikel-URL. Verwijderde concepten worden niet opnieuw aangemaakt.', 'scientias-youtube-carrousel' ); ?>
+						</p>
+					</td>
+				</tr>
 			</table>
 
 			<?php submit_button(); ?>
@@ -976,6 +1003,7 @@ function syc_render_link_overrides_page() {
 			<input type="hidden" name="syc_settings[api_key]" value="" />
 			<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
 			<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
+			<input type="hidden" name="syc_settings[auto_draft]" value="<?php echo esc_attr( ! empty( $settings['auto_draft'] ) ? 1 : 0 ); ?>" />
 			<?php syc_render_hidden_custom_carrousels_fields( $settings['custom_carrousels'] ); ?>
 			<?php foreach ( $link_overrides as $video_id => $url ) : ?>
 				<input type="hidden" name="syc_settings[link_overrides][existing_<?php echo esc_attr( md5( $video_id ) ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" />
@@ -1050,6 +1078,7 @@ function syc_render_link_overrides_page() {
 				<input type="hidden" name="syc_settings[api_key]" value="" />
 				<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
 				<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
+				<input type="hidden" name="syc_settings[auto_draft]" value="<?php echo esc_attr( ! empty( $settings['auto_draft'] ) ? 1 : 0 ); ?>" />
 				<?php syc_render_hidden_custom_carrousels_fields( $settings['custom_carrousels'] ); ?>
 				<?php foreach ( $link_overrides as $video_id => $url ) : ?>
 					<?php if ( isset( $paged_overrides[ $video_id ] ) ) : ?>
@@ -1237,6 +1266,7 @@ function syc_render_custom_carrousels_page() {
 			<input type="hidden" name="syc_settings[api_key]" value="" />
 			<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
 			<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
+			<input type="hidden" name="syc_settings[auto_draft]" value="<?php echo esc_attr( ! empty( $settings['auto_draft'] ) ? 1 : 0 ); ?>" />
 			<?php foreach ( $settings['link_overrides'] as $video_id => $url ) : ?>
 				<input type="hidden" name="syc_settings[link_overrides][<?php echo esc_attr( $video_id ); ?>]" value="<?php echo esc_url( $url ); ?>" />
 			<?php endforeach; ?>
@@ -1509,8 +1539,138 @@ function syc_get_api_shorts_items() {
 		)
 	);
 
+	syc_sync_feed_drafts( $items );
+
 	return $items;
 }
+
+/**
+ * Maak automatisch concept-berichten aan voor nieuwe shorts in de feed.
+ *
+ * Elke video-ID wordt maar één keer verwerkt: een concept dat de redactie
+ * verwijdert, wordt bewust niet opnieuw aangemaakt.
+ *
+ * @param array $items Feed-items met video_id en title.
+ */
+function syc_sync_feed_drafts( $items ) {
+	$settings = syc_get_settings();
+
+	if ( empty( $settings['auto_draft'] ) || empty( $items ) || ! is_array( $items ) ) {
+		return;
+	}
+
+	// Voorkom dubbele runs bij parallelle front-end requests.
+	if ( get_transient( SYC_AUTODRAFT_LOCK_KEY ) ) {
+		return;
+	}
+	set_transient( SYC_AUTODRAFT_LOCK_KEY, 1, MINUTE_IN_SECONDS );
+
+	$map = get_option( SYC_AUTODRAFT_MAP_OPTION, array() );
+	$map = is_array( $map ) ? $map : array();
+
+	$changed = false;
+
+	foreach ( $items as $item ) {
+		$video_id = isset( $item['video_id'] ) ? syc_sanitize_youtube_video_id( $item['video_id'] ) : '';
+		if ( '' === $video_id || isset( $map[ $video_id ] ) ) {
+			continue;
+		}
+
+		// Vangnet voor het geval de verwerkingsadministratie ooit verloren gaat.
+		$existing = get_posts(
+			array(
+				'post_type'      => 'post',
+				'post_status'    => 'any',
+				'posts_per_page' => 1,
+				'fields'         => 'ids',
+				'meta_key'       => '_syc_video_id',
+				'meta_value'     => $video_id,
+			)
+		);
+
+		if ( ! empty( $existing ) ) {
+			$map[ $video_id ] = (int) $existing[0];
+			$changed          = true;
+			continue;
+		}
+
+		$video_url = 'https://www.youtube.com/watch?v=' . $video_id;
+		$title     = isset( $item['title'] ) ? wp_strip_all_tags( $item['title'] ) : '';
+		if ( '' === $title ) {
+			$title = $video_url;
+		}
+
+		$content  = $video_url . "\n\n";
+		$content .= __( 'Dit concept is automatisch aangemaakt vanuit de YouTube-feed. Vul de tekst aan en publiceer het bericht; de link onder de carrouselvideo wordt bij publicatie automatisch gekoppeld.', 'scientias-youtube-carrousel' );
+
+		$post_id = wp_insert_post(
+			array(
+				'post_type'    => 'post',
+				'post_status'  => 'draft',
+				'post_title'   => $title,
+				'post_content' => $content,
+				'meta_input'   => array(
+					'_syc_video_id' => $video_id,
+				),
+			),
+			true
+		);
+
+		if ( is_wp_error( $post_id ) || ! $post_id ) {
+			continue;
+		}
+
+		$map[ $video_id ] = (int) $post_id;
+		$changed          = true;
+	}
+
+	if ( $changed ) {
+		update_option( SYC_AUTODRAFT_MAP_OPTION, $map, false );
+	}
+
+	delete_transient( SYC_AUTODRAFT_LOCK_KEY );
+}
+
+/**
+ * Vul de link-override zodra een automatisch aangemaakt concept wordt gepubliceerd.
+ *
+ * @param string  $new_status Nieuwe status.
+ * @param string  $old_status Oude status.
+ * @param WP_Post $post       Post object.
+ */
+function syc_maybe_set_link_override_on_publish( $new_status, $old_status, $post ) {
+	if ( 'publish' !== $new_status || 'publish' === $old_status ) {
+		return;
+	}
+
+	if ( ! $post instanceof WP_Post || 'post' !== $post->post_type ) {
+		return;
+	}
+
+	$video_id = syc_sanitize_youtube_video_id( get_post_meta( $post->ID, '_syc_video_id', true ) );
+	if ( '' === $video_id ) {
+		return;
+	}
+
+	$permalink = get_permalink( $post );
+	if ( ! $permalink ) {
+		return;
+	}
+
+	$settings = syc_normalize_settings( get_option( 'syc_settings', array() ) );
+
+	// Een handmatig gezette override van de redactie blijft staan.
+	if ( ! empty( $settings['link_overrides'][ $video_id ] ) ) {
+		return;
+	}
+
+	$settings['link_overrides'][ $video_id ] = esc_url_raw( $permalink );
+
+	update_option( 'syc_settings', $settings );
+
+	syc_clear_feed_caches();
+}
+add_action( 'transition_post_status', 'syc_maybe_set_link_override_on_publish', 10, 3 );
 
 /**
  * Haal items op uit een YouTube playlist via de YouTube Data API.

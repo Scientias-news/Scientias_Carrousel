@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 - 2026-07-16
+
+- Added automatic draft posts for new shorts in the YouTube feed, containing the video title, an embed, and an editorial note.
+- Added automatic link override linking: when an auto-created draft is published, the video's link override is filled with the article permalink.
+- Manually set link overrides always take precedence over automatic ones.
+- Deleted drafts are intentionally not recreated; each video ID is processed once.
+- Added an on/off setting for automatic drafts on the feed settings screen (off by default).
+
 ## 1.0.9 - 2026-06-17
 
 - Added optional YouTube playlist support to extra carrousels.
