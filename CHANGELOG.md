@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1 - 2026-07-20
+
+- Added a shortcode hint (`[scientias_youtube_carrousel]`) to the feed settings screen.
+- Auto-created draft posts are now assigned the "Shorts" category (under "Video") by default; other categories are still set editorially based on topic.
+
 ## 1.1.0 - 2026-07-16
 
 - Added automatic draft posts for new shorts in the YouTube feed, containing the video title, an embed, and an editorial note.

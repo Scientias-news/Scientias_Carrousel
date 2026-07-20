@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scientias YouTube Carrousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.1.0
+ * Version:     1.1.1
  * Author:      Scientias
  * Text Domain: scientias-youtube-carrousel
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.1.0' );
+define( 'SYC_VERSION', '1.1.1' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
 define( 'SYC_PLAYLIST_CACHE_PREFIX', 'syc_playlist_cache_' );
 define( 'SYC_API_FEED_CACHE_TTL', 5 * MINUTE_IN_SECONDS );
@@ -779,6 +779,8 @@ function syc_render_settings_page() {
 	?>
 	<div class="wrap">
 		<h1><?php esc_html_e( 'YouTube feed instellingen', 'scientias-youtube-carrousel' ); ?></h1>
+
+		<p><?php esc_html_e( 'Plaats de carrousel op een pagina of bericht met de shortcode:', 'scientias-youtube-carrousel' ); ?> <code>[scientias_youtube_carrousel]</code></p>
 
 		<?php if ( ! empty( $refreshed ) ) : ?>
 			<div class="notice notice-success is-dismissible">
@@ -1552,6 +1554,37 @@ function syc_get_api_shorts_items() {
  *
  * @param array $items Feed-items met video_id en title.
  */
+/**
+ * Bepaalt de standaard hoofdcategorie voor automatisch aangemaakte concept-berichten:
+ * de categorie "Shorts" onder "Video". Andere categorieën bepaalt de redactie zelf,
+ * aan de hand van het onderwerp.
+ */
+function syc_get_default_draft_category_id() {
+	$video_parent = get_term_by( 'name', 'Video', 'category' );
+	if ( $video_parent && ! is_wp_error( $video_parent ) ) {
+		$shorts = get_terms(
+			array(
+				'taxonomy'   => 'category',
+				'name'       => 'Shorts',
+				'parent'     => $video_parent->term_id,
+				'hide_empty' => false,
+				'number'     => 1,
+			)
+		);
+		if ( ! empty( $shorts ) && ! is_wp_error( $shorts ) ) {
+			return (int) $shorts[0]->term_id;
+		}
+	}
+
+	// Vangnet: een categorie "Shorts" ongeacht bovenliggende categorie.
+	$shorts = get_term_by( 'name', 'Shorts', 'category' );
+	if ( $shorts && ! is_wp_error( $shorts ) ) {
+		return (int) $shorts->term_id;
+	}
+
+	return 0;
+}
+
 function syc_sync_feed_drafts( $items ) {
 	$settings = syc_get_settings();
 
@@ -1603,18 +1636,22 @@ function syc_sync_feed_drafts( $items ) {
 		$content  = $video_url . "\n\n";
 		$content .= __( 'Dit concept is automatisch aangemaakt vanuit de YouTube-feed. Vul de tekst aan en publiceer het bericht; de link onder de carrouselvideo wordt bij publicatie automatisch gekoppeld.', 'scientias-youtube-carrousel' );
 
-		$post_id = wp_insert_post(
-			array(
-				'post_type'    => 'post',
-				'post_status'  => 'draft',
-				'post_title'   => $title,
-				'post_content' => $content,
-				'meta_input'   => array(
-					'_syc_video_id' => $video_id,
-				),
+		$post_args = array(
+			'post_type'    => 'post',
+			'post_status'  => 'draft',
+			'post_title'   => $title,
+			'post_content' => $content,
+			'meta_input'   => array(
+				'_syc_video_id' => $video_id,
 			),
-			true
 		);
+
+		$category_id = syc_get_default_draft_category_id();
+		if ( $category_id ) {
+			$post_args['post_category'] = array( $category_id );
+		}
+
+		$post_id = wp_insert_post( $post_args, true );
 
 		if ( is_wp_error( $post_id ) || ! $post_id ) {
 			continue;
