@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.1.4.1 - 2026-07-21
+
+- Hardened feed, settings, and auto-draft locks with atomic owner tokens and owner-aware cleanup.
+- Added global limits for saved link overrides, custom carrousels, and manual items per carrousel.
+- Made the CSV row limit apply to all rows read, including invalid and duplicate rows.
+- Rejects truncated CSV and carrousel form submissions instead of saving partial data.
+- Preserves existing over-limit settings and serializes all settings writers to prevent lost updates.
+- Keeps last-known-good feed data available on API errors and scopes the main cache to its channel settings.
+- Refreshes playlists in bounded rotating batches to limit request time and YouTube API quota usage.
+- Manual refresh now reports its actual result and uses Post/Redirect/Get to prevent accidental replays.
+- Cleaned up refresh lock state during uninstall.
+- Auto-created draft posts are now assigned to a configurable default author (Diederik Jekel) instead of no author, since WP-Cron has no logged-in user context.
+- Added a short retrying lock around the link-override write on post publish, preventing a rare lost-update race when two posts publish at nearly the same time.
+
+## 1.1.4 - 2026-07-21
+
+- Shortcode rendering no longer calls the YouTube API directly: both the main feed and extra-carrousel playlists are now read-only from the transient cache during a visitor request. All API fetching (main feed and every configured playlist) happens in the background via `syc_refresh_all_feeds()`, run by WP-Cron and by the "Cache legen" button in the admin.
+- Decoupled the cache TTL (15 minutes) from the cron refresh interval (5 minutes) so a slightly late cron run no longer leaves a cold-cache gap.
+- Added a lock around the background feed/playlist refresh to prevent overlapping fetches.
+- Clamped `max_items` to 50 at save time, not only when calling the API.
+- Sanitized video ID, title, and thumbnail URL from the YouTube API response before caching.
+- Added file size, MIME-type, and row-count limits to the link overrides CSV import.
+
+## 1.1.3 - 2026-07-21
+
+- Moved feed refresh and auto-draft synchronization to a WP-Cron event (every 5 minutes) instead of running during a visitor's page load. The shortcode still reads from the transient cache as a fallback, so behavior is unchanged if the cron doesn't run.
+- Added self-healing cron scheduling on `init` so the event is restored if it goes missing outside of the activation hook (e.g. after an automated deploy).
+- Added a deactivation hook to unschedule the cron event, and cron cleanup in `uninstall.php`.
+
+## 1.1.2 - 2026-07-21
+
+- Auto-created draft posts are now assigned both the "Video" and "Shorts" categories, and get the "video" post format set.
+- Fixed a shortcode bug where an explicit `title="Video"` on an extra carrousel was silently replaced by the carrousel name.
+- Added `load_plugin_textdomain()` so translation files in `languages/` are actually loaded.
+- Added `uninstall.php` to remove plugin options and transients when the plugin is deleted.
+
 ## 1.1.1 - 2026-07-20
 
 - Added a shortcode hint (`[scientias_youtube_carrousel]`) to the feed settings screen.

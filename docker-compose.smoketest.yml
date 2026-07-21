@@ -1,0 +1,49 @@
+# Lokale wp-cli smoke test-stack (dev-only, niet onderdeel van de plugin).
+#
+# Gebruik:
+#   docker compose -f docker-compose.smoketest.yml up -d
+#   docker compose -f docker-compose.smoketest.yml exec wpcli wp <command> --allow-root
+#
+# Eenmalige setup in een verse stack (volumes zijn al gevuld zolang je ze niet
+# met `down -v` verwijdert):
+#   wp core download --version=6.6 --allow-root
+#   wp config create --dbname=wordpress --dbuser=wordpress --dbpass=wordpress --dbhost=db --allow-root
+#   wp core install --url=http://localhost:8080 --title=Smoketest \
+#     --admin_user=admin --admin_password=admin --admin_email=admin@example.com --skip-email --allow-root
+#   ln -sfn /plugin-src /var/www/html/wp-content/plugins/scientias-youtube-carrousel
+#   wp plugin activate scientias-youtube-carrousel --allow-root
+#
+# De plugin-map wordt read-only gemount vanuit deze repo, dus wijzigingen aan
+# scientias-youtube-carrousel.php zijn direct zichtbaar zonder opnieuw op te bouwen.
+#
+# Opruimen: docker compose -f docker-compose.smoketest.yml down        (containers weg, data blijft)
+#           docker compose -f docker-compose.smoketest.yml down -v     (ook WP/db-data weg)
+services:
+  db:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wordpress
+    volumes:
+      - smoketest_db:/var/lib/mysql
+
+  wpcli:
+    image: wordpress:cli-php8.3
+    depends_on:
+      - db
+    user: "33:33"
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress
+    volumes:
+      - smoketest_wp:/var/www/html
+      - ./:/plugin-src:ro
+    entrypoint: ["tail", "-f", "/dev/null"]
+
+volumes:
+  smoketest_db:
+  smoketest_wp:

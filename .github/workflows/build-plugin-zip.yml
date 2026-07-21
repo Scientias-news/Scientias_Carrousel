@@ -21,8 +21,16 @@ jobs:
           rsync -av \
             --exclude='.git' \
             --exclude='.github' \
+            --exclude='.gitignore' \
             --exclude='build' \
+            --exclude='dist' \
+            --exclude='node_modules' \
+            --exclude='vendor' \
             --exclude='*.zip' \
+            --exclude='composer.json' \
+            --exclude='composer.lock' \
+            --exclude='docker-compose.smoketest.yml' \
+            --exclude='phpcs.xml.dist' \
             ./ build/scientias-youtube-carrousel/
 
       - name: Create ZIP

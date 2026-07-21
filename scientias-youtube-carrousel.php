@@ -2,26 +2,431 @@
 /**
  * Plugin Name: Scientias YouTube Carrousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.1.1
+ * Version:     1.1.4.1
  * Author:      Scientias
  * Text Domain: scientias-youtube-carrousel
+ *
+ * @package Scientias_YouTube_Carrousel
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.1.1' );
+define( 'SYC_VERSION', '1.1.4.1' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
+define( 'SYC_API_FEED_STALE_OPTION', 'syc_api_feed_stale' );
 define( 'SYC_PLAYLIST_CACHE_PREFIX', 'syc_playlist_cache_' );
-define( 'SYC_API_FEED_CACHE_TTL', 5 * MINUTE_IN_SECONDS );
+define( 'SYC_PLAYLIST_STALE_PREFIX', 'syc_playlist_stale_' );
+// Cache-TTL bewust langer dan het cron-ververs-interval, zodat een net-te-late
+// cronrun geen gat laat vallen waarin bezoekers een lege cache treffen.
+define( 'SYC_API_FEED_CACHE_TTL', 15 * MINUTE_IN_SECONDS );
 define( 'SYC_AUTODRAFT_MAP_OPTION', 'syc_autodraft_map' );
 define( 'SYC_AUTODRAFT_LOCK_KEY', 'syc_autodraft_lock' );
+define( 'SYC_FEED_REFRESH_LOCK_KEY', 'syc_feed_refresh_lock' );
+define( 'SYC_SETTINGS_LOCK_KEY', 'syc_settings_lock' );
+define( 'SYC_CRON_SCHEDULE_LOCK_KEY', 'syc_cron_schedule_lock' );
+// Standaard-auteur voor automatisch aangemaakte concept-berichten (WP-Cron heeft
+// geen ingelogde gebruiker, dus zonder dit zou post_author op 0 blijven staan).
+define( 'SYC_DEFAULT_DRAFT_AUTHOR_NAME', 'Diederik Jekel' );
+define( 'SYC_CRON_HOOK', 'syc_refresh_feed_event' );
+define( 'SYC_CRON_INTERVAL', 'syc_five_minutes' );
+define( 'SYC_CRON_REFRESH_INTERVAL', 5 * MINUTE_IN_SECONDS );
+define( 'SYC_REFRESH_LOCK_TTL', 2 * MINUTE_IN_SECONDS );
+define( 'SYC_PLAYLIST_REFRESH_BATCH_SIZE', 4 );
+define( 'SYC_PLAYLIST_REFRESH_CURSOR_OPTION', 'syc_playlist_refresh_cursor' );
+define( 'SYC_PLAYLIST_CACHE_REGISTRY_OPTION', 'syc_playlist_cache_registry' );
+define( 'SYC_PENDING_PLAYLIST_CLEANUP_OPTION', 'syc_pending_playlist_cleanup' );
+define( 'SYC_PLAYLIST_CLEANUP_HOOK', 'syc_cleanup_removed_playlists_event' );
+define( 'SYC_API_REQUEST_TIMEOUT', 4 );
+define( 'SYC_CSV_IMPORT_MAX_FILE_SIZE', 2 * MB_IN_BYTES );
+define( 'SYC_CSV_IMPORT_MAX_ROWS', 5000 );
+define( 'SYC_MAX_LINK_OVERRIDES', 5000 );
+define( 'SYC_MAX_CUSTOM_CARROUSELS', 100 );
+define( 'SYC_MAX_CUSTOM_CARROUSEL_ITEMS', 100 );
 
 /**
  * Aantal lege invoerrijen op het extra carrousels-scherm.
  */
 define( 'SYC_CUSTOM_CARROUSEL_EMPTY_ROWS', 5 );
+
+/**
+ * Laad vertalingen uit de languages-map van de plugin.
+ */
+function syc_load_textdomain() {
+	load_plugin_textdomain( 'scientias-youtube-carrousel', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
+}
+add_action( 'init', 'syc_load_textdomain' );
+
+/**
+ * Registreer een cron-interval van 5 minuten, korter dan de feed-cache TTL.
+ *
+ * @param array $schedules Bestaande cron-intervallen.
+ * @return array
+ */
+function syc_register_cron_interval( $schedules ) {
+	if ( ! isset( $schedules[ SYC_CRON_INTERVAL ] ) ) {
+		$schedules[ SYC_CRON_INTERVAL ] = array(
+			'interval' => SYC_CRON_REFRESH_INTERVAL,
+			'display'  => __( 'Elke 5 minuten (Scientias YouTube Carrousel)', 'scientias-youtube-carrousel' ),
+		);
+	}
+	return $schedules;
+}
+// phpcs:ignore WordPress.WP.CronInterval.ChangeDetected -- Interval is defined by SYC_CRON_REFRESH_INTERVAL.
+add_filter( 'cron_schedules', 'syc_register_cron_interval' );
+
+/**
+ * Plan het periodieke feed-ververs-event in, tenzij het al gepland staat.
+ *
+ * Draait zowel op activatie als (zelfherstellend) op elke 'init', zodat een
+ * update buiten de activatie-hook om (bv. via automatische deploy) het cron-
+ * event niet stilletjes laat verdwijnen.
+ */
+function syc_schedule_cron_event() {
+	if ( wp_next_scheduled( SYC_CRON_HOOK ) ) {
+		return;
+	}
+
+	$lock = syc_acquire_lock( SYC_CRON_SCHEDULE_LOCK_KEY, 30 );
+	if ( false === $lock ) {
+		return;
+	}
+
+	try {
+		if ( ! wp_next_scheduled( SYC_CRON_HOOK ) ) {
+			wp_schedule_event( time(), SYC_CRON_INTERVAL, SYC_CRON_HOOK );
+		}
+	} finally {
+		syc_release_lock( SYC_CRON_SCHEDULE_LOCK_KEY, $lock );
+	}
+}
+register_activation_hook( __FILE__, 'syc_schedule_cron_event' );
+add_action( 'init', 'syc_schedule_cron_event' );
+
+/**
+ * Verwijder het geplande event bij het deactiveren van de plugin.
+ */
+function syc_unschedule_cron_event() {
+	wp_clear_scheduled_hook( SYC_CRON_HOOK );
+}
+register_deactivation_hook( __FILE__, 'syc_unschedule_cron_event' );
+
+/**
+ * Bouw brongebonden cachesleutels, zodat een gewijzigd kanaal nooit oude
+ * feeddata van het vorige kanaal toont.
+ *
+ * @param array|null $settings Plugininstellingen.
+ * @return array
+ */
+function syc_get_main_feed_storage_keys( $settings = null ) {
+	$settings    = is_array( $settings ) ? $settings : syc_get_settings();
+	$fingerprint = md5( (string) $settings['channel_id'] . '|' . (int) $settings['max_items'] );
+
+	return array(
+		'cache' => SYC_API_FEED_CACHE_KEY . '_' . $fingerprint,
+		'stale' => SYC_API_FEED_STALE_OPTION . '_' . $fingerprint,
+	);
+}
+
+/**
+ * Ververs de hoofdfeed en alle playlists van extra carrousels (en
+ * synchroniseer de auto-drafts) op de achtergrond via WP-Cron, in plaats van
+ * tijdens het laden van een bezoekerspagina. Ook bruikbaar als handmatige
+ * "ververs nu"-actie vanuit de instellingenpagina.
+ *
+ * De lock voorkomt dat een trage cronrun en een handmatige refresh elkaar
+ * overlappen.
+ *
+ * @param bool $force Ook nog geldige caches opnieuw ophalen.
+ * @return array|WP_Error Resultaattellingen of een lockfout.
+ */
+function syc_refresh_all_feeds( $force = false ) {
+	$lock = syc_acquire_lock( SYC_FEED_REFRESH_LOCK_KEY, SYC_REFRESH_LOCK_TTL );
+	if ( false === $lock ) {
+		return new WP_Error( 'syc_refresh_locked', __( 'Er is al een feedverversing actief.', 'scientias-youtube-carrousel' ) );
+	}
+
+	$result = array(
+		'refreshed' => 0,
+		'skipped'   => 0,
+		'errors'    => array(),
+	);
+
+	try {
+		$settings  = syc_get_settings();
+		$main_keys = syc_get_main_feed_storage_keys( $settings );
+		if ( $force || ! is_array( get_transient( $main_keys['cache'] ) ) ) {
+			$main_result = syc_fetch_and_cache_api_shorts_items();
+			if ( is_wp_error( $main_result ) ) {
+				$result['errors'][] = $main_result->get_error_message();
+			} else {
+				++$result['refreshed'];
+			}
+		} else {
+			++$result['skipped'];
+		}
+
+		$playlists = array();
+		foreach ( $settings['custom_carrousels'] as $carrousel ) {
+			if ( ! empty( $carrousel['playlist_id'] ) ) {
+				$playlist_id = syc_extract_youtube_playlist_id( $carrousel['playlist_id'] );
+				if ( '' !== $playlist_id ) {
+					$playlists[ $playlist_id ] = $playlist_id;
+				}
+			}
+		}
+
+		$playlists = array_values( $playlists );
+		if ( ! empty( $playlists ) ) {
+			$playlist_count = count( $playlists );
+			$cursor         = absint( get_option( SYC_PLAYLIST_REFRESH_CURSOR_OPTION, 0 ) ) % $playlist_count;
+			$inspected      = 0;
+			$attempted      = 0;
+
+			while ( $inspected < $playlist_count && $attempted < SYC_PLAYLIST_REFRESH_BATCH_SIZE ) {
+				$playlist_id = $playlists[ ( $cursor + $inspected ) % $playlist_count ];
+				++$inspected;
+				$cache_key = SYC_PLAYLIST_CACHE_PREFIX . md5( $playlist_id );
+				if ( ! $force && is_array( get_transient( $cache_key ) ) ) {
+					++$result['skipped'];
+					continue;
+				}
+
+				++$attempted;
+				$playlist_result = syc_fetch_and_cache_api_playlist_items( $playlist_id );
+				if ( is_wp_error( $playlist_result ) ) {
+					$result['errors'][] = $playlist_result->get_error_message();
+				} else {
+					++$result['refreshed'];
+				}
+			}
+
+			update_option( SYC_PLAYLIST_REFRESH_CURSOR_OPTION, ( $cursor + $inspected ) % $playlist_count, false );
+		}
+	} finally {
+		syc_release_lock( SYC_FEED_REFRESH_LOCK_KEY, $lock );
+	}
+	if ( $result['refreshed'] > 0 ) {
+		syc_purge_page_caches();
+	}
+
+	return $result;
+}
+add_action( SYC_CRON_HOOK, 'syc_refresh_all_feeds' );
+
+/**
+ * Verkrijg atomair een tijdelijke lock via een niet-autoloaded option.
+ *
+ * @param string $key Locknaam.
+ * @param int    $ttl Geldigheidsduur in seconden.
+ * @return array|false Lockhandle, of false als de lock bezet is.
+ */
+function syc_acquire_lock( $key, $ttl ) {
+	global $wpdb;
+
+	$option_name = '_syc_lock_' . sanitize_key( $key );
+	$now         = time();
+	$current     = get_option( $option_name, false );
+	$expires     = is_array( $current ) && isset( $current['expires'] ) ? (int) $current['expires'] : (int) $current;
+	$lock        = array(
+		'token'   => wp_generate_uuid4(),
+		'expires' => $now + max( 1, absint( $ttl ) ),
+	);
+
+	if ( $expires > $now ) {
+		return false;
+	}
+
+	if ( false === $current ) {
+		return add_option( $option_name, $lock, '', false ) ? $lock : false;
+	}
+
+	// Directe CAS-query maakt het overnemen van een verlopen lock atomair.
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+	$updated = $wpdb->query(
+		$wpdb->prepare(
+			"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+			maybe_serialize( $lock ),
+			$option_name,
+			maybe_serialize( $current )
+		)
+	);
+
+	if ( 1 !== $updated ) {
+		return false;
+	}
+
+	wp_cache_delete( $option_name, 'options' );
+	return $lock;
+}
+
+/**
+ * Geef een eerder verkregen lock vrij.
+ *
+ * @param string $key  Locknaam.
+ * @param array  $lock Lockhandle van syc_acquire_lock().
+ */
+function syc_release_lock( $key, $lock ) {
+	global $wpdb;
+
+	if ( ! is_array( $lock ) || empty( $lock['token'] ) ) {
+		return;
+	}
+
+	$option_name = '_syc_lock_' . sanitize_key( $key );
+	// De waardevoorwaarde voorkomt dat een oude eigenaar een nieuwe lock verwijdert.
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+	$wpdb->query(
+		$wpdb->prepare(
+			"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+			$option_name,
+			maybe_serialize( $lock )
+		)
+	);
+	wp_cache_delete( $option_name, 'options' );
+}
+
+/**
+ * Probeer kort een settingslock te verkrijgen.
+ *
+ * @return array|false
+ */
+function syc_acquire_settings_lock() {
+	for ( $attempt = 0; $attempt < 20; $attempt++ ) {
+		$lock = syc_acquire_lock( SYC_SETTINGS_LOCK_KEY, 30 );
+		if ( false !== $lock ) {
+			return $lock;
+		}
+		usleep( 100000 );
+	}
+
+	return false;
+}
+
+/**
+ * Geef een settingslock uit de normale options.php-savecyclus vrij.
+ */
+function syc_release_pending_settings_lock() {
+	if ( empty( $GLOBALS['syc_pending_settings_lock'] ) ) {
+		return;
+	}
+
+	syc_release_lock( SYC_SETTINGS_LOCK_KEY, $GLOBALS['syc_pending_settings_lock'] );
+	unset( $GLOBALS['syc_pending_settings_lock'] );
+}
+
+/**
+ * Geef de options.php-lock vrij zodra de optie is bijgewerkt.
+ *
+ * @param string $option Bijgewerkte optienaam.
+ */
+function syc_maybe_release_settings_lock( $option ) {
+	if ( 'syc_settings' === $option ) {
+		syc_release_pending_settings_lock();
+
+		if ( ! empty( $GLOBALS['syc_removed_main_feed_keys'] ) ) {
+			delete_transient( $GLOBALS['syc_removed_main_feed_keys']['cache'] );
+			delete_option( $GLOBALS['syc_removed_main_feed_keys']['stale'] );
+			unset( $GLOBALS['syc_removed_main_feed_keys'] );
+		}
+
+		if ( ! empty( $GLOBALS['syc_removed_playlist_ids'] ) ) {
+			syc_cleanup_playlist_caches( $GLOBALS['syc_removed_playlist_ids'] );
+			unset( $GLOBALS['syc_removed_playlist_ids'] );
+		}
+
+		if ( ! empty( $GLOBALS['syc_settings_should_purge'] ) ) {
+			unset( $GLOBALS['syc_settings_should_purge'] );
+			syc_purge_page_caches();
+		}
+	}
+}
+add_action( 'updated_option', 'syc_maybe_release_settings_lock', 10, 1 );
+add_action( 'added_option', 'syc_maybe_release_settings_lock', 10, 1 );
+add_action( 'shutdown', 'syc_release_pending_settings_lock' );
+
+/**
+ * Werk syc_settings atomair bij vanuit interne pluginacties.
+ *
+ * @param callable $mutator Ontvangt de actuele instellingen en retourneert de nieuwe instellingen.
+ * @return array|WP_Error Nieuwe instellingen of fout.
+ */
+function syc_update_settings_locked( $mutator ) {
+	$lock = syc_acquire_settings_lock();
+	if ( false === $lock ) {
+		return new WP_Error( 'syc_settings_locked', __( 'De instellingen worden momenteel elders bijgewerkt. Probeer het opnieuw.', 'scientias-youtube-carrousel' ) );
+	}
+
+	try {
+		$current = syc_normalize_settings( get_option( 'syc_settings', array() ) );
+		$updated = call_user_func( $mutator, $current );
+		if ( is_wp_error( $updated ) ) {
+			return $updated;
+		}
+
+		$GLOBALS['syc_internal_settings_update'] = true;
+		update_option( 'syc_settings', syc_normalize_settings( $updated ) );
+		unset( $GLOBALS['syc_internal_settings_update'] );
+
+		return syc_normalize_settings( $updated );
+	} finally {
+		unset( $GLOBALS['syc_internal_settings_update'] );
+		syc_release_lock( SYC_SETTINGS_LOCK_KEY, $lock );
+	}
+}
+
+/**
+ * Verwijder de caches van playlists die niet meer geconfigureerd zijn.
+ *
+ * @param array $playlist_ids Playlist-ID's.
+ */
+function syc_cleanup_playlist_caches( $playlist_ids ) {
+	$lock = syc_acquire_lock( SYC_FEED_REFRESH_LOCK_KEY, SYC_REFRESH_LOCK_TTL );
+	if ( false === $lock ) {
+		$pending = get_option( SYC_PENDING_PLAYLIST_CLEANUP_OPTION, array() );
+		$pending = is_array( $pending ) ? $pending : array();
+		update_option( SYC_PENDING_PLAYLIST_CLEANUP_OPTION, array_values( array_unique( array_merge( $pending, (array) $playlist_ids ) ) ), false );
+		if ( ! wp_next_scheduled( SYC_PLAYLIST_CLEANUP_HOOK ) ) {
+			wp_schedule_single_event( time() + MINUTE_IN_SECONDS, SYC_PLAYLIST_CLEANUP_HOOK );
+		}
+		return;
+	}
+
+	$registry = get_option( SYC_PLAYLIST_CACHE_REGISTRY_OPTION, array() );
+	$registry = is_array( $registry ) ? $registry : array();
+	$active   = syc_get_carrousel_playlist_ids( syc_get_settings()['custom_carrousels'] );
+
+	try {
+		foreach ( array_unique( (array) $playlist_ids ) as $playlist_id ) {
+			$playlist_id = syc_extract_youtube_playlist_id( $playlist_id );
+			if ( '' === $playlist_id || in_array( $playlist_id, $active, true ) ) {
+				continue;
+			}
+
+			$hash = md5( $playlist_id );
+			delete_transient( SYC_PLAYLIST_CACHE_PREFIX . $hash );
+			delete_option( SYC_PLAYLIST_STALE_PREFIX . $hash );
+			unset( $registry[ $hash ] );
+		}
+
+		update_option( SYC_PLAYLIST_CACHE_REGISTRY_OPTION, $registry, false );
+	} finally {
+		syc_release_lock( SYC_FEED_REFRESH_LOCK_KEY, $lock );
+	}
+}
+
+/**
+ * Verwerk uitgestelde cachecleanup zodra geen refresh meer actief is.
+ */
+function syc_process_pending_playlist_cleanup() {
+	$playlist_ids = get_option( SYC_PENDING_PLAYLIST_CLEANUP_OPTION, array() );
+	delete_option( SYC_PENDING_PLAYLIST_CLEANUP_OPTION );
+	if ( ! empty( $playlist_ids ) && is_array( $playlist_ids ) ) {
+		syc_cleanup_playlist_caches( $playlist_ids );
+	}
+}
+add_action( SYC_PLAYLIST_CLEANUP_HOOK, 'syc_process_pending_playlist_cleanup' );
 
 /**
  * Register custom post type for carrousel items.
@@ -43,13 +448,13 @@ function syc_register_video_post_type() {
 	);
 
 	$args = array(
-		'labels'             => $labels,
-		'public'             => false,
-		'show_ui'            => true,
-		'show_in_menu'       => false,
-		'supports'           => array( 'title', 'thumbnail' ),
-		'menu_icon'          => 'dashicons-video-alt3',
-		'show_in_rest'       => false,
+		'labels'       => $labels,
+		'public'       => false,
+		'show_ui'      => true,
+		'show_in_menu' => false,
+		'supports'     => array( 'title', 'thumbnail' ),
+		'menu_icon'    => 'dashicons-video-alt3',
+		'show_in_rest' => false,
 	);
 
 	register_post_type( 'syc_video', $args );
@@ -153,25 +558,9 @@ function syc_render_manual_items_notice() {
 add_action( 'admin_notices', 'syc_render_manual_items_notice' );
 
 /**
- * Leeg de interne feed-cache en probeer bekende page caches te purgen.
+ * Purge bekende page caches zonder de laatst opgehaalde feeddata te wissen.
  */
-function syc_clear_feed_caches() {
-	delete_transient( SYC_API_FEED_CACHE_KEY );
-
-	$settings = get_option( 'syc_settings', array() );
-	if ( ! empty( $settings['custom_carrousels'] ) && is_array( $settings['custom_carrousels'] ) ) {
-		foreach ( $settings['custom_carrousels'] as $carrousel ) {
-			if ( empty( $carrousel['playlist_id'] ) ) {
-				continue;
-			}
-
-			$playlist_id = syc_extract_youtube_playlist_id( $carrousel['playlist_id'] );
-			if ( '' !== $playlist_id ) {
-				delete_transient( SYC_PLAYLIST_CACHE_PREFIX . md5( $playlist_id ) );
-			}
-		}
-	}
-
+function syc_purge_page_caches() {
 	if ( function_exists( 'sg_cachepress_purge_cache' ) ) {
 		sg_cachepress_purge_cache();
 	}
@@ -208,7 +597,7 @@ function syc_maybe_clear_manual_video_cache( $post_id, $post ) {
 		return;
 	}
 
-	syc_clear_feed_caches();
+	syc_purge_page_caches();
 }
 add_action( 'save_post', 'syc_maybe_clear_manual_video_cache', 20, 2 );
 
@@ -219,7 +608,7 @@ add_action( 'save_post', 'syc_maybe_clear_manual_video_cache', 20, 2 );
  */
 function syc_maybe_clear_deleted_video_cache( $post_id ) {
 	if ( 'syc_video' === get_post_type( $post_id ) ) {
-		syc_clear_feed_caches();
+		syc_purge_page_caches();
 	}
 }
 add_action( 'before_delete_post', 'syc_maybe_clear_deleted_video_cache' );
@@ -355,9 +744,11 @@ function syc_extract_youtube_playlist_id( $playlist_input ) {
  * Sanitize extra handmatige carrousels.
  *
  * @param mixed $raw_carrousels Ruwe input.
+ * @param int   $max_carrousels Maximum aantal carrousels; 0 bewaart bestaande data.
+ * @param int   $max_items      Maximum aantal items per carrousel; 0 bewaart bestaande data.
  * @return array
  */
-function syc_sanitize_custom_carrousels( $raw_carrousels ) {
+function syc_sanitize_custom_carrousels( $raw_carrousels, $max_carrousels = 0, $max_items = 0 ) {
 	if ( ! is_array( $raw_carrousels ) ) {
 		return array();
 	}
@@ -365,6 +756,10 @@ function syc_sanitize_custom_carrousels( $raw_carrousels ) {
 	$carrousels = array();
 
 	foreach ( $raw_carrousels as $raw_slug => $raw_carrousel ) {
+		if ( $max_carrousels > 0 && count( $carrousels ) >= $max_carrousels ) {
+			break;
+		}
+
 		if ( ! is_array( $raw_carrousel ) ) {
 			continue;
 		}
@@ -388,6 +783,10 @@ function syc_sanitize_custom_carrousels( $raw_carrousels ) {
 		$items = array();
 		if ( ! empty( $raw_carrousel['items'] ) && is_array( $raw_carrousel['items'] ) ) {
 			foreach ( $raw_carrousel['items'] as $raw_item ) {
+				if ( $max_items > 0 && count( $items ) >= $max_items ) {
+					break;
+				}
+
 				if ( ! is_array( $raw_item ) ) {
 					continue;
 				}
@@ -427,9 +826,10 @@ function syc_sanitize_custom_carrousels( $raw_carrousels ) {
  * Sanitize link overrides voor YouTube feed-items.
  *
  * @param mixed $raw_overrides Ruwe input.
+ * @param int   $max_overrides Maximum aantal overrides; 0 bewaart bestaande data.
  * @return array
  */
-function syc_sanitize_link_overrides( $raw_overrides ) {
+function syc_sanitize_link_overrides( $raw_overrides, $max_overrides = 0 ) {
 	if ( ! is_array( $raw_overrides ) ) {
 		return array();
 	}
@@ -437,6 +837,10 @@ function syc_sanitize_link_overrides( $raw_overrides ) {
 	$overrides = array();
 
 	foreach ( $raw_overrides as $raw_video_id => $row ) {
+		if ( $max_overrides > 0 && count( $overrides ) >= $max_overrides ) {
+			break;
+		}
+
 		if ( is_string( $row ) ) {
 			$row = array(
 				'video_id' => is_string( $raw_video_id ) ? $raw_video_id : '',
@@ -484,6 +888,8 @@ function syc_sanitize_youtube_video_id( $video_id ) {
  * @return array|WP_Error
  */
 function syc_parse_link_overrides_csv( $file_path ) {
+	// WP_Filesystem biedt geen streaming CSV-parser voor tijdelijke uploads.
+	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
 	$handle = fopen( $file_path, 'r' );
 	if ( false === $handle ) {
 		return new WP_Error( 'syc_csv_open_failed', __( 'Het CSV-bestand kon niet worden geopend.', 'scientias-youtube-carrousel' ) );
@@ -491,6 +897,7 @@ function syc_parse_link_overrides_csv( $file_path ) {
 
 	$overrides = array();
 	$line      = 0;
+	$data_rows = 0;
 	$skipped   = 0;
 	$delimiter = ',';
 
@@ -500,8 +907,14 @@ function syc_parse_link_overrides_csv( $file_path ) {
 		rewind( $handle );
 	}
 
-	while ( false !== ( $row = fgetcsv( $handle, 0, $delimiter ) ) ) {
-		$line++;
+	$truncated = false;
+
+	while ( true ) {
+		$row = fgetcsv( $handle, 0, $delimiter );
+		if ( false === $row ) {
+			break;
+		}
+		++$line;
 
 		if ( 1 === $line && isset( $row[0], $row[1] ) ) {
 			$first_header  = strtolower( trim( (string) $row[0] ) );
@@ -512,7 +925,14 @@ function syc_parse_link_overrides_csv( $file_path ) {
 			}
 		}
 
+		++$data_rows;
+		if ( $data_rows > SYC_CSV_IMPORT_MAX_ROWS ) {
+			$truncated = true;
+			break;
+		}
+
 		if ( empty( $row ) || ( isset( $row[0] ) && '' === trim( (string) $row[0] ) ) ) {
+			++$skipped;
 			continue;
 		}
 
@@ -520,13 +940,17 @@ function syc_parse_link_overrides_csv( $file_path ) {
 		$url      = isset( $row[1] ) ? esc_url_raw( trim( (string) $row[1] ) ) : '';
 
 		if ( '' === $video_id || '' === $url ) {
-			$skipped++;
+			++$skipped;
 			continue;
 		}
 
+		if ( isset( $overrides[ $video_id ] ) ) {
+			++$skipped;
+		}
 		$overrides[ $video_id ] = $url;
 	}
 
+	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 	fclose( $handle );
 
 	if ( empty( $overrides ) ) {
@@ -537,16 +961,16 @@ function syc_parse_link_overrides_csv( $file_path ) {
 		'overrides' => $overrides,
 		'imported'  => count( $overrides ),
 		'skipped'   => $skipped,
+		'truncated' => $truncated,
 	);
 }
 
 /**
  * Verwerk CSV-import voor link overrides.
  *
- * @param array $settings Huidige plugininstellingen.
  * @return array Importmeldingen.
  */
-function syc_maybe_import_link_overrides_csv( $settings ) {
+function syc_maybe_import_link_overrides_csv() {
 	if ( empty( $_POST['syc_csv_import_submit'] ) ) {
 		return array();
 	}
@@ -566,39 +990,76 @@ function syc_maybe_import_link_overrides_csv( $settings ) {
 		);
 	}
 
-	if ( empty( $_FILES['syc_link_overrides_csv']['tmp_name'] ) || ! is_uploaded_file( $_FILES['syc_link_overrides_csv']['tmp_name'] ) ) {
+	$upload_error = isset( $_FILES['syc_link_overrides_csv']['error'] ) ? (int) $_FILES['syc_link_overrides_csv']['error'] : UPLOAD_ERR_NO_FILE;
+	$tmp_name     = isset( $_FILES['syc_link_overrides_csv']['tmp_name'] ) ? sanitize_text_field( wp_unslash( $_FILES['syc_link_overrides_csv']['tmp_name'] ) ) : '';
+
+	if ( UPLOAD_ERR_OK !== $upload_error || '' === $tmp_name || ! is_uploaded_file( $tmp_name ) ) {
 		return array(
 			'type'    => 'error',
 			'message' => __( 'Kies eerst een CSV-bestand om te uploaden.', 'scientias-youtube-carrousel' ),
 		);
 	}
 
+	$file_size = isset( $_FILES['syc_link_overrides_csv']['size'] ) ? (int) $_FILES['syc_link_overrides_csv']['size'] : 0;
+	if ( $file_size <= 0 || $file_size > SYC_CSV_IMPORT_MAX_FILE_SIZE ) {
+		return array(
+			'type'    => 'error',
+			/* translators: %d: maximum file size in MB. */
+			'message' => sprintf( __( 'Het CSV-bestand is leeg of groter dan de limiet van %d MB.', 'scientias-youtube-carrousel' ), SYC_CSV_IMPORT_MAX_FILE_SIZE / MB_IN_BYTES ),
+		);
+	}
+
 	$file_name = isset( $_FILES['syc_link_overrides_csv']['name'] ) ? sanitize_file_name( wp_unslash( $_FILES['syc_link_overrides_csv']['name'] ) ) : '';
-	$file_ext  = strtolower( pathinfo( $file_name, PATHINFO_EXTENSION ) );
-	if ( 'csv' !== $file_ext ) {
+	$filetype  = wp_check_filetype_and_ext( $tmp_name, $file_name, array( 'csv' => 'text/csv' ) );
+	if ( empty( $filetype['ext'] ) || 'csv' !== $filetype['ext'] ) {
 		return array(
 			'type'    => 'error',
 			'message' => __( 'Upload een bestand met de extensie .csv.', 'scientias-youtube-carrousel' ),
 		);
 	}
 
-	$parsed = syc_parse_link_overrides_csv( $_FILES['syc_link_overrides_csv']['tmp_name'] );
+	$parsed = syc_parse_link_overrides_csv( $tmp_name );
 	if ( is_wp_error( $parsed ) ) {
 		return array(
 			'type'    => 'error',
 			'message' => $parsed->get_error_message(),
 		);
 	}
+	if ( ! empty( $parsed['truncated'] ) ) {
+		return array(
+			'type'    => 'error',
+			'message' => sprintf(
+				/* translators: %d: maximum number of data rows. */
+				__( 'De CSV is niet geïmporteerd omdat deze meer dan %d gegevensregels bevat. Splits het bestand en probeer opnieuw.', 'scientias-youtube-carrousel' ),
+				SYC_CSV_IMPORT_MAX_ROWS
+			),
+		);
+	}
 
 	$mode               = isset( $_POST['syc_csv_import_mode'] ) ? sanitize_key( wp_unslash( $_POST['syc_csv_import_mode'] ) ) : 'merge';
-	$current_overrides  = ! empty( $settings['link_overrides'] ) && is_array( $settings['link_overrides'] ) ? $settings['link_overrides'] : array();
 	$imported_overrides = $parsed['overrides'];
-	$new_overrides      = 'replace' === $mode ? $imported_overrides : array_merge( $current_overrides, $imported_overrides );
+	$new_settings       = syc_update_settings_locked(
+		function ( $current ) use ( $mode, $imported_overrides ) {
+			$current_overrides = ! empty( $current['link_overrides'] ) && is_array( $current['link_overrides'] ) ? $current['link_overrides'] : array();
+			$new_overrides     = 'replace' === $mode ? $imported_overrides : array_merge( $current_overrides, $imported_overrides );
 
-	$new_settings                   = $settings;
-	$new_settings['link_overrides'] = syc_sanitize_link_overrides( $new_overrides );
-	update_option( 'syc_settings', $new_settings );
-	syc_clear_feed_caches();
+			if ( count( $new_overrides ) > SYC_MAX_LINK_OVERRIDES ) {
+				return new WP_Error( 'syc_link_limit', __( 'De import is niet opgeslagen omdat het maximumaantal link overrides zou worden overschreden.', 'scientias-youtube-carrousel' ) );
+			}
+
+			$current['link_overrides'] = syc_sanitize_link_overrides( $new_overrides, SYC_MAX_LINK_OVERRIDES );
+			return $current;
+		}
+	);
+
+	if ( is_wp_error( $new_settings ) ) {
+		return array(
+			'type'    => 'error',
+			'message' => $new_settings->get_error_message(),
+		);
+	}
+
+	syc_purge_page_caches();
 
 	if ( 'replace' === $mode ) {
 		$message = sprintf(
@@ -644,11 +1105,66 @@ function syc_normalize_settings( $settings ) {
 	return array(
 		'api_key'           => trim( sanitize_text_field( $settings['api_key'] ) ),
 		'channel_id'        => trim( sanitize_text_field( $settings['channel_id'] ) ),
-		'max_items'         => max( 1, absint( $settings['max_items'] ) ),
+		'max_items'         => min( max( 1, absint( $settings['max_items'] ) ), 50 ),
 		'auto_draft'        => ! empty( $settings['auto_draft'] ) ? 1 : 0,
 		'link_overrides'    => syc_sanitize_link_overrides( $settings['link_overrides'] ),
 		'custom_carrousels' => syc_sanitize_custom_carrousels( $settings['custom_carrousels'] ),
 	);
+}
+
+/**
+ * Controleer invoerlimieten zonder bestaande opgeslagen data af te kappen.
+ *
+ * @param mixed $raw_carrousels Ruwe formulierinvoer.
+ * @return bool
+ */
+function syc_custom_carrousels_exceed_limits( $raw_carrousels ) {
+	if ( ! is_array( $raw_carrousels ) ) {
+		return false;
+	}
+
+	// Het formulier bevat één lege nieuwe carrousel en vijf lege itemrijen.
+	if ( count( $raw_carrousels ) > SYC_MAX_CUSTOM_CARROUSELS + 1 ) {
+		return true;
+	}
+	foreach ( $raw_carrousels as $carrousel ) {
+		if ( is_array( $carrousel ) && ! empty( $carrousel['items'] ) && is_array( $carrousel['items'] ) && count( $carrousel['items'] ) > SYC_MAX_CUSTOM_CARROUSEL_ITEMS + SYC_CUSTOM_CARROUSEL_EMPTY_ROWS ) {
+			return true;
+		}
+	}
+
+	$sanitized = syc_sanitize_custom_carrousels( $raw_carrousels, SYC_MAX_CUSTOM_CARROUSELS + 1, SYC_MAX_CUSTOM_CARROUSEL_ITEMS + 1 );
+	if ( count( $sanitized ) > SYC_MAX_CUSTOM_CARROUSELS ) {
+		return true;
+	}
+	foreach ( $sanitized as $carrousel ) {
+		if ( count( $carrousel['items'] ) > SYC_MAX_CUSTOM_CARROUSEL_ITEMS ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Verzamel unieke playlist-ID's uit carrouselinstellingen.
+ *
+ * @param array $carrousels Carrouselinstellingen.
+ * @return array
+ */
+function syc_get_carrousel_playlist_ids( $carrousels ) {
+	$playlist_ids = array();
+	foreach ( (array) $carrousels as $carrousel ) {
+		if ( empty( $carrousel['playlist_id'] ) ) {
+			continue;
+		}
+		$playlist_id = syc_extract_youtube_playlist_id( $carrousel['playlist_id'] );
+		if ( '' !== $playlist_id ) {
+			$playlist_ids[ $playlist_id ] = $playlist_id;
+		}
+	}
+
+	return array_values( $playlist_ids );
 }
 
 /**
@@ -658,19 +1174,111 @@ function syc_normalize_settings( $settings ) {
  * @return array
  */
 function syc_sanitize_settings( $input ) {
-	$old_settings = syc_normalize_settings( get_option( 'syc_settings', array() ) );
-	$output = array();
+	if ( ! empty( $GLOBALS['syc_internal_settings_update'] ) ) {
+		return syc_normalize_settings( $input );
+	}
+	if ( ! empty( $GLOBALS['syc_pending_settings_lock'] ) ) {
+		// Een nieuwe optie wordt door WordPress via update_option() en add_option()
+		// tweemaal gesanitized. De eerste pass heeft de sectielogica al toegepast.
+		return syc_normalize_settings( $input );
+	}
 
-	$new_api_key              = isset( $input['api_key'] ) ? trim( sanitize_text_field( $input['api_key'] ) ) : '';
-	$output['api_key']        = '' !== $new_api_key ? $new_api_key : $old_settings['api_key'];
-	$output['channel_id']     = isset( $input['channel_id'] ) ? trim( sanitize_text_field( $input['channel_id'] ) ) : '';
-	$output['max_items']      = isset( $input['max_items'] ) ? max( 1, absint( $input['max_items'] ) ) : 8;
-	$output['auto_draft']     = isset( $input['auto_draft'] ) ? ( ! empty( $input['auto_draft'] ) ? 1 : 0 ) : $old_settings['auto_draft'];
-	$output['link_overrides']    = isset( $input['link_overrides'] ) ? syc_sanitize_link_overrides( $input['link_overrides'] ) : $old_settings['link_overrides'];
-	$output['custom_carrousels'] = isset( $input['custom_carrousels'] ) ? syc_sanitize_custom_carrousels( $input['custom_carrousels'] ) : $old_settings['custom_carrousels'];
+	$lock = syc_acquire_settings_lock();
+	if ( false === $lock ) {
+		add_settings_error( 'syc_settings', 'syc_settings_locked', __( 'De instellingen zijn niet opgeslagen omdat een andere wijziging bezig is. Probeer het opnieuw.', 'scientias-youtube-carrousel' ), 'error' );
+		return syc_normalize_settings( get_option( 'syc_settings', array() ) );
+	}
+	$GLOBALS['syc_pending_settings_lock'] = $lock;
+
+	$old_settings = syc_normalize_settings( get_option( 'syc_settings', array() ) );
+	$output       = $old_settings;
+	// options.php controleert de register_setting-nonce voordat deze callback draait.
+	// phpcs:ignore WordPress.Security.NonceVerification.Missing
+	$section = isset( $_POST['syc_settings_section'] ) ? sanitize_key( wp_unslash( $_POST['syc_settings_section'] ) ) : 'legacy';
+
+	if ( in_array( $section, array( 'general', 'legacy' ), true ) ) {
+		$new_api_key = isset( $input['api_key'] ) ? trim( sanitize_text_field( $input['api_key'] ) ) : '';
+		if ( '' !== $new_api_key ) {
+			$output['api_key'] = $new_api_key;
+		}
+		if ( isset( $input['channel_id'] ) ) {
+			$output['channel_id'] = trim( sanitize_text_field( $input['channel_id'] ) );
+		}
+		if ( isset( $input['max_items'] ) ) {
+			$output['max_items'] = min( max( 1, absint( $input['max_items'] ) ), 50 );
+		}
+		if ( isset( $input['auto_draft_present'] ) ) {
+			$output['auto_draft'] = ! empty( $input['auto_draft'] ) ? 1 : 0;
+		} elseif ( 'legacy' === $section && isset( $input['auto_draft'] ) ) {
+			$output['auto_draft'] = ! empty( $input['auto_draft'] ) ? 1 : 0;
+		}
+	}
+
+	if ( 'link_add' === $section && ! empty( $input['link_overrides']['new'] ) ) {
+		$new_override = syc_sanitize_link_overrides( array( $input['link_overrides']['new'] ), 1 );
+		if ( ! empty( $new_override ) ) {
+			$video_id = key( $new_override );
+			if ( ! isset( $output['link_overrides'][ $video_id ] ) && count( $output['link_overrides'] ) >= SYC_MAX_LINK_OVERRIDES ) {
+				add_settings_error( 'syc_settings', 'syc_link_limit', __( 'De override is niet toegevoegd: het maximumaantal koppelingen is bereikt.', 'scientias-youtube-carrousel' ), 'error' );
+			} else {
+				$output['link_overrides'][ $video_id ] = current( $new_override );
+			}
+		}
+	}
+
+	if ( 'link_edit' === $section && ! empty( $input['link_overrides'] ) && is_array( $input['link_overrides'] ) ) {
+		foreach ( array_slice( $input['link_overrides'], 0, 50 ) as $row ) {
+			if ( ! is_array( $row ) ) {
+				continue;
+			}
+			$original_id  = isset( $row['original_video_id'] ) ? syc_sanitize_youtube_video_id( wp_unslash( $row['original_video_id'] ) ) : '';
+			$had_original = '' !== $original_id && isset( $output['link_overrides'][ $original_id ] );
+			if ( '' !== $original_id ) {
+				unset( $output['link_overrides'][ $original_id ] );
+			}
+
+			$override = syc_sanitize_link_overrides( array( $row ), 1 );
+			if ( ! empty( $override ) ) {
+				$video_id = key( $override );
+				if ( $had_original || isset( $output['link_overrides'][ $video_id ] ) || count( $output['link_overrides'] ) < SYC_MAX_LINK_OVERRIDES ) {
+					$output['link_overrides'][ $video_id ] = current( $override );
+				}
+			}
+		}
+	}
+
+	if ( 'custom_carrousels' === $section ) {
+		if ( empty( $input['custom_carrousels_complete'] ) ) {
+			add_settings_error( 'syc_settings', 'syc_carrousel_truncated', __( 'De carrousels zijn niet opgeslagen omdat het formulier onvolledig is ontvangen. Verhoog PHP max_input_vars of beheer minder carrousels tegelijk.', 'scientias-youtube-carrousel' ), 'error' );
+		} elseif ( isset( $input['custom_carrousels'] ) && syc_custom_carrousels_exceed_limits( $input['custom_carrousels'] ) ) {
+			add_settings_error( 'syc_settings', 'syc_carrousel_limit', __( 'De carrousels zijn niet opgeslagen omdat een ingestelde limiet is overschreden.', 'scientias-youtube-carrousel' ), 'error' );
+		} else {
+			$raw_carrousels              = isset( $input['custom_carrousels'] ) ? $input['custom_carrousels'] : array();
+			$output['custom_carrousels'] = syc_sanitize_custom_carrousels( $raw_carrousels, SYC_MAX_CUSTOM_CARROUSELS, SYC_MAX_CUSTOM_CARROUSEL_ITEMS );
+		}
+	}
+
+	if ( 'legacy' === $section ) {
+		if ( isset( $input['link_overrides'] ) && count( (array) $input['link_overrides'] ) <= SYC_MAX_LINK_OVERRIDES ) {
+			$output['link_overrides'] = syc_sanitize_link_overrides( $input['link_overrides'], SYC_MAX_LINK_OVERRIDES );
+		}
+		if ( isset( $input['custom_carrousels'] ) && ! syc_custom_carrousels_exceed_limits( $input['custom_carrousels'] ) ) {
+			$output['custom_carrousels'] = syc_sanitize_custom_carrousels( $input['custom_carrousels'], SYC_MAX_CUSTOM_CARROUSELS, SYC_MAX_CUSTOM_CARROUSEL_ITEMS );
+		}
+	}
 
 	if ( $old_settings !== $output ) {
-		syc_clear_feed_caches();
+		$GLOBALS['syc_settings_should_purge'] = true;
+		$old_main_keys                        = syc_get_main_feed_storage_keys( $old_settings );
+		$new_main_keys                        = syc_get_main_feed_storage_keys( $output );
+		if ( $old_main_keys !== $new_main_keys ) {
+			$GLOBALS['syc_removed_main_feed_keys'] = $old_main_keys;
+		}
+		if ( $old_settings['custom_carrousels'] !== $output['custom_carrousels'] ) {
+			$old_playlist_ids                    = syc_get_carrousel_playlist_ids( $old_settings['custom_carrousels'] );
+			$new_playlist_ids                    = syc_get_carrousel_playlist_ids( $output['custom_carrousels'] );
+			$GLOBALS['syc_removed_playlist_ids'] = array_diff( $old_playlist_ids, $new_playlist_ids );
+		}
 	}
 
 	return $output;
@@ -736,30 +1344,46 @@ function syc_get_settings() {
 }
 
 /**
- * Render verborgen velden om extra carrousels te behouden op andere settings-formulieren.
- *
- * @param array $custom_carrousels Extra carrousels.
+ * Verwerk een handmatige feedverversing via Post/Redirect/Get.
  */
-function syc_render_hidden_custom_carrousels_fields( $custom_carrousels ) {
-	if ( empty( $custom_carrousels ) || ! is_array( $custom_carrousels ) ) {
-		return;
+function syc_handle_manual_refresh() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Je hebt geen rechten om feeds te verversen.', 'scientias-youtube-carrousel' ) );
+	}
+	check_admin_referer( 'syc_manual_refresh_action', 'syc_manual_refresh_nonce' );
+
+	$result = syc_refresh_all_feeds( true );
+	if ( is_wp_error( $result ) ) {
+		$notice = array(
+			'type'    => 'error',
+			'message' => $result->get_error_message(),
+		);
+	} elseif ( ! empty( $result['errors'] ) ) {
+		$notice = array(
+			'type'    => $result['refreshed'] > 0 ? 'warning' : 'error',
+			'message' => sprintf(
+				/* translators: 1: successful refresh count, 2: error count. */
+				__( '%1$d feeds zijn ververst; %2$d feeds konden niet worden opgehaald. De laatst bekende feeddata blijft zichtbaar.', 'scientias-youtube-carrousel' ),
+				(int) $result['refreshed'],
+				count( $result['errors'] )
+			),
+		);
+	} else {
+		$notice = array(
+			'type'    => 'success',
+			'message' => sprintf(
+				/* translators: %d: refreshed feed count. */
+				__( '%d feeds zijn direct ververst. Eventuele overige playlists worden in volgende cronbatches verwerkt.', 'scientias-youtube-carrousel' ),
+				(int) $result['refreshed']
+			),
+		);
 	}
 
-	foreach ( $custom_carrousels as $slug => $carrousel ) :
-		$items       = ! empty( $carrousel['items'] ) && is_array( $carrousel['items'] ) ? $carrousel['items'] : array();
-		$playlist_id = isset( $carrousel['playlist_id'] ) ? $carrousel['playlist_id'] : '';
-		?>
-		<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][name]" value="<?php echo esc_attr( $carrousel['name'] ); ?>" />
-		<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][slug]" value="<?php echo esc_attr( $slug ); ?>" />
-		<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][playlist_id]" value="<?php echo esc_attr( $playlist_id ); ?>" />
-		<?php foreach ( $items as $index => $item ) : ?>
-			<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][items][<?php echo esc_attr( $index ); ?>][title]" value="<?php echo esc_attr( $item['title'] ); ?>" />
-			<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][items][<?php echo esc_attr( $index ); ?>][video_url]" value="<?php echo esc_url( $item['video_url'] ); ?>" />
-			<input type="hidden" name="syc_settings[custom_carrousels][<?php echo esc_attr( $slug ); ?>][items][<?php echo esc_attr( $index ); ?>][link_url]" value="<?php echo esc_url( $item['link_url'] ); ?>" />
-		<?php endforeach; ?>
-		<?php
-	endforeach;
+	set_transient( 'syc_manual_refresh_notice_' . get_current_user_id(), $notice, 2 * MINUTE_IN_SECONDS );
+	wp_safe_redirect( admin_url( 'admin.php?page=syc-settings' ) );
+	exit;
 }
+add_action( 'admin_post_syc_manual_refresh', 'syc_handle_manual_refresh' );
 
 /**
  * Render de instellingenpagina.
@@ -769,22 +1393,22 @@ function syc_render_settings_page() {
 		return;
 	}
 
-	if ( isset( $_POST['syc_manual_refresh'] ) && check_admin_referer( 'syc_manual_refresh_action', 'syc_manual_refresh_nonce' ) ) {
-		syc_clear_feed_caches();
-		$refreshed = true;
-	}
+	$refresh_notice_key = 'syc_manual_refresh_notice_' . get_current_user_id();
+	$refresh_notice     = get_transient( $refresh_notice_key );
+	delete_transient( $refresh_notice_key );
 
 	$settings = syc_get_settings();
 	$status   = get_option( 'syc_api_feed_meta', array() );
 	?>
 	<div class="wrap">
 		<h1><?php esc_html_e( 'YouTube feed instellingen', 'scientias-youtube-carrousel' ); ?></h1>
+		<?php settings_errors( 'syc_settings' ); ?>
 
 		<p><?php esc_html_e( 'Plaats de carrousel op een pagina of bericht met de shortcode:', 'scientias-youtube-carrousel' ); ?> <code>[scientias_youtube_carrousel]</code></p>
 
-		<?php if ( ! empty( $refreshed ) ) : ?>
-			<div class="notice notice-success is-dismissible">
-				<p><?php esc_html_e( 'De YouTube feed cache is geleegd. De volgende paginaweergave bouwt de feed opnieuw op.', 'scientias-youtube-carrousel' ); ?></p>
+		<?php if ( ! empty( $refresh_notice ) ) : ?>
+			<div class="notice notice-<?php echo esc_attr( $refresh_notice['type'] ); ?> is-dismissible">
+				<p><?php echo esc_html( $refresh_notice['message'] ); ?></p>
 			</div>
 		<?php endif; ?>
 
@@ -792,10 +1416,7 @@ function syc_render_settings_page() {
 			<?php
 			settings_fields( 'syc_settings_group' );
 			?>
-			<?php foreach ( $settings['link_overrides'] as $video_id => $url ) : ?>
-				<input type="hidden" name="syc_settings[link_overrides][<?php echo esc_attr( $video_id ); ?>]" value="<?php echo esc_url( $url ); ?>" />
-			<?php endforeach; ?>
-			<?php syc_render_hidden_custom_carrousels_fields( $settings['custom_carrousels'] ); ?>
+			<input type="hidden" name="syc_settings_section" value="general" />
 			<table class="form-table" role="presentation">
 				<tr>
 					<th scope="row">
@@ -860,6 +1481,7 @@ function syc_render_settings_page() {
 						<?php esc_html_e( 'Automatische concept-berichten', 'scientias-youtube-carrousel' ); ?>
 					</th>
 					<td>
+						<input type="hidden" name="syc_settings[auto_draft_present]" value="1" />
 						<input type="hidden" name="syc_settings[auto_draft]" value="0" />
 						<label for="syc_settings_auto_draft">
 							<input
@@ -884,10 +1506,11 @@ function syc_render_settings_page() {
 		<hr />
 
 		<h2><?php esc_html_e( 'Feed cache', 'scientias-youtube-carrousel' ); ?></h2>
-		<p><?php esc_html_e( 'De feed wordt automatisch periodiek ververst. Je kunt de cache hier ook handmatig legen.', 'scientias-youtube-carrousel' ); ?></p>
-		<form method="post">
+		<p><?php esc_html_e( 'De feed en playlists worden automatisch op de achtergrond in begrensde batches ververst. Je kunt hier direct een nieuwe verversing starten; bestaande feeddata blijft zichtbaar als een aanvraag mislukt.', 'scientias-youtube-carrousel' ); ?></p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<input type="hidden" name="action" value="syc_manual_refresh" />
 			<?php wp_nonce_field( 'syc_manual_refresh_action', 'syc_manual_refresh_nonce' ); ?>
-			<?php submit_button( __( 'Cache legen', 'scientias-youtube-carrousel' ), 'secondary', 'syc_manual_refresh', false ); ?>
+			<?php submit_button( __( 'Feeds direct verversen', 'scientias-youtube-carrousel' ), 'secondary', 'syc_manual_refresh', false ); ?>
 		</form>
 
 		<hr />
@@ -897,7 +1520,7 @@ function syc_render_settings_page() {
 			<p><?php esc_html_e( 'Configureer eerst je API sleutel en kanaal ID om de status van de YouTube feed te kunnen bekijken.', 'scientias-youtube-carrousel' ); ?></p>
 		<?php else : ?>
 			<?php if ( empty( $status ) ) : ?>
-				<p><?php esc_html_e( 'Er is nog geen aanvraag naar de YouTube API gedaan. Bezoek een pagina met de carrousel of leeg de cache om een eerste fetch te forceren.', 'scientias-youtube-carrousel' ); ?></p>
+				<p><?php esc_html_e( 'Er is nog geen aanvraag naar de YouTube API gedaan. Deze wordt binnen 5 minuten automatisch gedaan, of leeg de cache hierboven om het nu te forceren.', 'scientias-youtube-carrousel' ); ?></p>
 			<?php else : ?>
 				<?php
 				$timestamp = isset( $status['updated_at'] ) ? (int) $status['updated_at'] : 0;
@@ -945,21 +1568,23 @@ function syc_render_link_overrides_page() {
 		return;
 	}
 
-	$settings       = syc_get_settings();
-	$import_notice  = syc_maybe_import_link_overrides_csv( $settings );
+	$import_notice  = syc_maybe_import_link_overrides_csv();
 	$settings       = syc_get_settings();
 	$link_overrides = ! empty( $settings['link_overrides'] ) && is_array( $settings['link_overrides'] ) ? $settings['link_overrides'] : array();
 	$per_page       = 50;
 	$total_items    = count( $link_overrides );
 	$total_pages    = max( 1, (int) ceil( $total_items / $per_page ) );
-	$current_page   = isset( $_GET['paged'] ) ? max( 1, absint( $_GET['paged'] ) ) : 1;
-	$current_page   = min( $current_page, $total_pages );
-	$offset         = ( $current_page - 1 ) * $per_page;
+	// Alleen navigatie; deze waarde wijzigt geen gegevens.
+	// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+	$current_page    = isset( $_GET['paged'] ) ? max( 1, absint( $_GET['paged'] ) ) : 1;
+	$current_page    = min( $current_page, $total_pages );
+	$offset          = ( $current_page - 1 ) * $per_page;
 	$paged_overrides = array_slice( $link_overrides, $offset, $per_page, true );
-	$base_url       = menu_page_url( 'syc-link-overrides', false );
+	$base_url        = menu_page_url( 'syc-link-overrides', false );
 	?>
 	<div class="wrap">
 		<h1><?php esc_html_e( 'Link overrides', 'scientias-youtube-carrousel' ); ?></h1>
+		<?php settings_errors( 'syc_settings' ); ?>
 		<p><?php esc_html_e( 'Koppel automatische YouTube feed-video\'s optioneel aan een pagina op de site. Zonder override blijft de titel gewone tekst en opent de thumbnail fullscreen.', 'scientias-youtube-carrousel' ); ?></p>
 
 		<?php if ( ! empty( $import_notice ) ) : ?>
@@ -1002,15 +1627,7 @@ function syc_render_link_overrides_page() {
 
 		<form method="post" action="options.php">
 			<?php settings_fields( 'syc_settings_group' ); ?>
-			<input type="hidden" name="syc_settings[api_key]" value="" />
-			<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
-			<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
-			<input type="hidden" name="syc_settings[auto_draft]" value="<?php echo esc_attr( ! empty( $settings['auto_draft'] ) ? 1 : 0 ); ?>" />
-			<?php syc_render_hidden_custom_carrousels_fields( $settings['custom_carrousels'] ); ?>
-			<?php foreach ( $link_overrides as $video_id => $url ) : ?>
-				<input type="hidden" name="syc_settings[link_overrides][existing_<?php echo esc_attr( md5( $video_id ) ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" />
-				<input type="hidden" name="syc_settings[link_overrides][existing_<?php echo esc_attr( md5( $video_id ) ); ?>][url]" value="<?php echo esc_url( $url ); ?>" />
-			<?php endforeach; ?>
+			<input type="hidden" name="syc_settings_section" value="link_add" />
 
 			<h2><?php esc_html_e( 'Nieuwe link override toevoegen', 'scientias-youtube-carrousel' ); ?></h2>
 			<table class="widefat striped" style="max-width: 900px; margin-top: 1rem;">
@@ -1047,9 +1664,9 @@ function syc_render_link_overrides_page() {
 				printf(
 					/* translators: 1: first item number, 2: last item number, 3: total item count. */
 					esc_html__( 'Toont %1$d-%2$d van %3$d opgeslagen koppelingen.', 'scientias-youtube-carrousel' ),
-					$total_items ? $offset + 1 : 0,
-					min( $offset + $per_page, $total_items ),
-					$total_items
+					(int) ( $total_items ? $offset + 1 : 0 ),
+					(int) min( $offset + $per_page, $total_items ),
+					(int) $total_items
 				);
 				?>
 			</p>
@@ -1077,18 +1694,7 @@ function syc_render_link_overrides_page() {
 
 			<form method="post" action="options.php">
 				<?php settings_fields( 'syc_settings_group' ); ?>
-				<input type="hidden" name="syc_settings[api_key]" value="" />
-				<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
-				<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
-				<input type="hidden" name="syc_settings[auto_draft]" value="<?php echo esc_attr( ! empty( $settings['auto_draft'] ) ? 1 : 0 ); ?>" />
-				<?php syc_render_hidden_custom_carrousels_fields( $settings['custom_carrousels'] ); ?>
-				<?php foreach ( $link_overrides as $video_id => $url ) : ?>
-					<?php if ( isset( $paged_overrides[ $video_id ] ) ) : ?>
-						<?php continue; ?>
-					<?php endif; ?>
-					<input type="hidden" name="syc_settings[link_overrides][keep_<?php echo esc_attr( md5( $video_id ) ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" />
-					<input type="hidden" name="syc_settings[link_overrides][keep_<?php echo esc_attr( md5( $video_id ) ); ?>][url]" value="<?php echo esc_url( $url ); ?>" />
-				<?php endforeach; ?>
+				<input type="hidden" name="syc_settings_section" value="link_edit" />
 
 				<table class="widefat striped" style="max-width: 900px;">
 					<thead>
@@ -1102,6 +1708,7 @@ function syc_render_link_overrides_page() {
 							<?php $row_key = 'edit_' . md5( $video_id ); ?>
 							<tr>
 								<td>
+									<input type="hidden" name="syc_settings[link_overrides][<?php echo esc_attr( $row_key ); ?>][original_video_id]" value="<?php echo esc_attr( $video_id ); ?>" />
 									<input type="text" name="syc_settings[link_overrides][<?php echo esc_attr( $row_key ); ?>][video_id]" value="<?php echo esc_attr( $video_id ); ?>" class="regular-text" />
 								</td>
 								<td>
@@ -1141,7 +1748,7 @@ function syc_render_link_overrides_page() {
 			<?php endif; ?>
 		<?php endif; ?>
 
-		<?php $cached_feed_items = get_transient( SYC_API_FEED_CACHE_KEY ); ?>
+		<?php $cached_feed_items = syc_get_api_shorts_items(); ?>
 		<?php if ( is_array( $cached_feed_items ) && ! empty( $cached_feed_items ) ) : ?>
 			<h2><?php esc_html_e( 'Huidige feed-video\'s', 'scientias-youtube-carrousel' ); ?></h2>
 			<p><?php esc_html_e( 'Gebruik deze video-ID\'s bij Link overrides. De status laat zien of er voor die feedvideo al een pagina is gekoppeld.', 'scientias-youtube-carrousel' ); ?></p>
@@ -1229,7 +1836,13 @@ function syc_render_custom_carrousel_fields( $field_key, $carrousel, $is_new = f
 		</thead>
 		<tbody>
 			<?php for ( $index = 0; $index < $rows; $index++ ) : ?>
-				<?php $item = isset( $items[ $index ] ) ? $items[ $index ] : array( 'title' => '', 'video_url' => '', 'link_url' => '' ); ?>
+				<?php
+				$item = isset( $items[ $index ] ) ? $items[ $index ] : array(
+					'title'     => '',
+					'video_url' => '',
+					'link_url'  => '',
+				);
+				?>
 				<tr>
 					<td>
 						<input type="text" name="syc_settings[custom_carrousels][<?php echo esc_attr( $field_key ); ?>][items][<?php echo esc_attr( $index ); ?>][title]" value="<?php echo esc_attr( $item['title'] ); ?>" class="large-text" />
@@ -1261,17 +1874,12 @@ function syc_render_custom_carrousels_page() {
 	?>
 	<div class="wrap">
 		<h1><?php esc_html_e( 'Extra carrousels', 'scientias-youtube-carrousel' ); ?></h1>
+		<?php settings_errors( 'syc_settings' ); ?>
 		<p><?php esc_html_e( 'Maak video-carrousels voor losse onderwerpen. Vul een YouTube-playlist in of beheer zelf losse video-URL’s en pagina-URL’s.', 'scientias-youtube-carrousel' ); ?></p>
 
 		<form method="post" action="options.php">
 			<?php settings_fields( 'syc_settings_group' ); ?>
-			<input type="hidden" name="syc_settings[api_key]" value="" />
-			<input type="hidden" name="syc_settings[channel_id]" value="<?php echo esc_attr( $settings['channel_id'] ); ?>" />
-			<input type="hidden" name="syc_settings[max_items]" value="<?php echo esc_attr( $settings['max_items'] ); ?>" />
-			<input type="hidden" name="syc_settings[auto_draft]" value="<?php echo esc_attr( ! empty( $settings['auto_draft'] ) ? 1 : 0 ); ?>" />
-			<?php foreach ( $settings['link_overrides'] as $video_id => $url ) : ?>
-				<input type="hidden" name="syc_settings[link_overrides][<?php echo esc_attr( $video_id ); ?>]" value="<?php echo esc_url( $url ); ?>" />
-			<?php endforeach; ?>
+			<input type="hidden" name="syc_settings_section" value="custom_carrousels" />
 
 			<h2><?php esc_html_e( 'Nieuwe carrousel', 'scientias-youtube-carrousel' ); ?></h2>
 			<?php syc_render_custom_carrousel_fields( 'new', array(), true ); ?>
@@ -1291,6 +1899,7 @@ function syc_render_custom_carrousels_page() {
 				<?php endforeach; ?>
 			<?php endif; ?>
 
+			<input type="hidden" name="syc_settings[custom_carrousels_complete]" value="1" />
 			<?php submit_button( __( 'Carrousels opslaan', 'scientias-youtube-carrousel' ) ); ?>
 		</form>
 	</div>
@@ -1374,7 +1983,7 @@ function syc_extract_youtube_video_id( $url ) {
 	}
 
 	$segments = '' !== $path ? explode( '/', $path ) : array();
-	$shorts  = array_search( 'shorts', $segments, true );
+	$shorts   = array_search( 'shorts', $segments, true );
 	if ( false !== $shorts && ! empty( $segments[ $shorts + 1 ] ) ) {
 		return syc_sanitize_youtube_video_id( $segments[ $shorts + 1 ] );
 	}
@@ -1388,9 +1997,12 @@ function syc_extract_youtube_video_id( $url ) {
 }
 
 /**
- * Haal Shorts items op via de YouTube Data API.
+ * Lees de gecachete Shorts items.
  *
- * Resultaat wordt gecached in een transient.
+ * Doet zelf nooit een YouTube API-call: de cache wordt uitsluitend op de
+ * achtergrond gevuld door {@see syc_refresh_all_feeds()} (WP-Cron of een
+ * handmatige refresh in de admin). Zo blokkeert een bezoekersrequest nooit
+ * op een externe API-aanroep.
  *
  * @return array|WP_Error
  */
@@ -1400,6 +2012,37 @@ function syc_get_api_shorts_items() {
 	if ( empty( $settings['api_key'] ) || empty( $settings['channel_id'] ) ) {
 		return new WP_Error( 'syc_missing_settings', __( 'YouTube API sleutel of kanaal ID ontbreekt.', 'scientias-youtube-carrousel' ) );
 	}
+
+	$keys   = syc_get_main_feed_storage_keys( $settings );
+	$cached = get_transient( $keys['cache'] );
+	if ( is_array( $cached ) ) {
+		return $cached;
+	}
+
+	$stale = get_option( $keys['stale'], null );
+	if ( is_array( $stale ) ) {
+		return $stale;
+	}
+
+	return new WP_Error( 'syc_feed_cache_empty', __( 'De YouTube feed cache is nog niet gevuld; deze wordt periodiek op de achtergrond ververst.', 'scientias-youtube-carrousel' ) );
+}
+
+/**
+ * Haal Shorts items op via de YouTube Data API en cache het resultaat.
+ *
+ * Wordt uitsluitend aangeroepen vanuit {@see syc_refresh_all_feeds()}
+ * (WP-Cron of een handmatige refresh in de admin), nooit tijdens het laden
+ * van een bezoekerspagina.
+ *
+ * @return array|WP_Error
+ */
+function syc_fetch_and_cache_api_shorts_items() {
+	$settings = syc_get_settings();
+
+	if ( empty( $settings['api_key'] ) || empty( $settings['channel_id'] ) ) {
+		return new WP_Error( 'syc_missing_settings', __( 'YouTube API sleutel of kanaal ID ontbreekt.', 'scientias-youtube-carrousel' ) );
+	}
+	$keys = syc_get_main_feed_storage_keys( $settings );
 
 	$playlist_id = syc_get_shorts_playlist_id( $settings['channel_id'] );
 	if ( ! $playlist_id ) {
@@ -1414,11 +2057,6 @@ function syc_get_api_shorts_items() {
 			)
 		);
 		return $error;
-	}
-
-	$cached = get_transient( SYC_API_FEED_CACHE_KEY );
-	if ( is_array( $cached ) ) {
-		return $cached;
 	}
 
 	$max_results = min( max( 1, absint( $settings['max_items'] ) ), 50 );
@@ -1436,7 +2074,7 @@ function syc_get_api_shorts_items() {
 	$response = wp_remote_get(
 		$url,
 		array(
-			'timeout' => 10,
+			'timeout' => SYC_API_REQUEST_TIMEOUT,
 		)
 	);
 
@@ -1455,6 +2093,7 @@ function syc_get_api_shorts_items() {
 
 	$code = wp_remote_retrieve_response_code( $response );
 	if ( 200 !== $code ) {
+		/* translators: %d: HTTP status code. */
 		$error = new WP_Error( 'syc_api_http_error', sprintf( __( 'YouTube API fout: HTTP %d', 'scientias-youtube-carrousel' ), (int) $code ) );
 		update_option(
 			'syc_api_feed_meta',
@@ -1471,7 +2110,7 @@ function syc_get_api_shorts_items() {
 	$body = wp_remote_retrieve_body( $response );
 	$data = json_decode( $body, true );
 
-	if ( ! is_array( $data ) || empty( $data['items'] ) ) {
+	if ( ! is_array( $data ) || ! isset( $data['items'] ) || ! is_array( $data['items'] ) ) {
 		$error = new WP_Error( 'syc_api_empty', __( 'Geen items gevonden in de YouTube Shorts feed.', 'scientias-youtube-carrousel' ) );
 		update_option(
 			'syc_api_feed_meta',
@@ -1492,9 +2131,13 @@ function syc_get_api_shorts_items() {
 			continue;
 		}
 
-		$video_id = $item['snippet']['resourceId']['videoId'];
-		$title    = isset( $item['snippet']['title'] ) ? $item['snippet']['title'] : '';
-		$thumb    = '';
+		$video_id = syc_sanitize_youtube_video_id( $item['snippet']['resourceId']['videoId'] );
+		if ( '' === $video_id ) {
+			continue;
+		}
+
+		$title = isset( $item['snippet']['title'] ) ? sanitize_text_field( wp_strip_all_tags( $item['snippet']['title'] ) ) : '';
+		$thumb = '';
 
 		if ( ! empty( $item['snippet']['thumbnails']['maxres']['url'] ) ) {
 			$thumb = $item['snippet']['thumbnails']['maxres']['url'];
@@ -1504,9 +2147,7 @@ function syc_get_api_shorts_items() {
 			$thumb = $item['snippet']['thumbnails']['medium']['url'];
 		}
 
-		if ( '' === $thumb ) {
-			$thumb = syc_get_youtube_thumbnail_url( $video_id );
-		}
+		$thumb = '' !== $thumb ? esc_url_raw( $thumb ) : syc_get_youtube_thumbnail_url( $video_id );
 
 		$items[] = array(
 			'video_id' => $video_id,
@@ -1515,22 +2156,9 @@ function syc_get_api_shorts_items() {
 		);
 	}
 
-	if ( empty( $items ) ) {
-		$error = new WP_Error( 'syc_api_empty_items', __( 'Er zijn geen geldige Shorts items gevonden.', 'scientias-youtube-carrousel' ) );
-		update_option(
-			'syc_api_feed_meta',
-			array(
-				'status'     => 'error',
-				'message'    => $error->get_error_message(),
-				'code'       => $error->get_error_code(),
-				'updated_at' => time(),
-			)
-		);
-		return $error;
-	}
-
-	// Cache kort: YouTube-feeds kunnen na publicatie vertragen en page caches staan hier vaak nog voor.
-	set_transient( SYC_API_FEED_CACHE_KEY, $items, SYC_API_FEED_CACHE_TTL );
+	// TTL langer dan het cron-interval, zie SYC_API_FEED_CACHE_TTL.
+	set_transient( $keys['cache'], $items, SYC_API_FEED_CACHE_TTL );
+	update_option( $keys['stale'], $items, false );
 
 	update_option(
 		'syc_api_feed_meta',
@@ -1547,21 +2175,19 @@ function syc_get_api_shorts_items() {
 }
 
 /**
- * Maak automatisch concept-berichten aan voor nieuwe shorts in de feed.
+ * Bepaalt de standaard categorieën voor automatisch aangemaakte concept-berichten:
+ * zowel "Video" als de daaronder vallende "Shorts". Andere categorieën bepaalt de
+ * redactie zelf, aan de hand van het onderwerp.
  *
- * Elke video-ID wordt maar één keer verwerkt: een concept dat de redactie
- * verwijdert, wordt bewust niet opnieuw aangemaakt.
- *
- * @param array $items Feed-items met video_id en title.
+ * @return int[] Term-ID's, leeg als geen van beide categorieën gevonden is.
  */
-/**
- * Bepaalt de standaard hoofdcategorie voor automatisch aangemaakte concept-berichten:
- * de categorie "Shorts" onder "Video". Andere categorieën bepaalt de redactie zelf,
- * aan de hand van het onderwerp.
- */
-function syc_get_default_draft_category_id() {
+function syc_get_default_draft_category_ids() {
+	$category_ids = array();
+
 	$video_parent = get_term_by( 'name', 'Video', 'category' );
 	if ( $video_parent && ! is_wp_error( $video_parent ) ) {
+		$category_ids[] = (int) $video_parent->term_id;
+
 		$shorts = get_terms(
 			array(
 				'taxonomy'   => 'category',
@@ -1572,19 +2198,60 @@ function syc_get_default_draft_category_id() {
 			)
 		);
 		if ( ! empty( $shorts ) && ! is_wp_error( $shorts ) ) {
-			return (int) $shorts[0]->term_id;
+			$category_ids[] = (int) $shorts[0]->term_id;
 		}
 	}
 
-	// Vangnet: een categorie "Shorts" ongeacht bovenliggende categorie.
-	$shorts = get_term_by( 'name', 'Shorts', 'category' );
-	if ( $shorts && ! is_wp_error( $shorts ) ) {
-		return (int) $shorts->term_id;
+	if ( empty( $category_ids ) ) {
+		// Vangnet: een categorie "Shorts" ongeacht bovenliggende categorie.
+		$shorts = get_term_by( 'name', 'Shorts', 'category' );
+		if ( $shorts && ! is_wp_error( $shorts ) ) {
+			$category_ids[] = (int) $shorts->term_id;
+		}
 	}
 
-	return 0;
+	return $category_ids;
 }
 
+/**
+ * Bepaal het gebruikers-ID voor de standaard-auteur van automatisch aangemaakte
+ * concept-berichten, op naam (SYC_DEFAULT_DRAFT_AUTHOR_NAME).
+ *
+ * @return int Gebruikers-ID, of 0 als er geen match gevonden is.
+ */
+function syc_get_default_draft_author_id() {
+	static $cached_id = null;
+
+	if ( null !== $cached_id ) {
+		return $cached_id;
+	}
+
+	$user = get_user_by( 'login', sanitize_user( SYC_DEFAULT_DRAFT_AUTHOR_NAME, true ) );
+
+	if ( ! $user ) {
+		$users = get_users(
+			array(
+				'search'         => SYC_DEFAULT_DRAFT_AUTHOR_NAME,
+				'search_columns' => array( 'display_name' ),
+				'number'         => 1,
+			)
+		);
+		$user  = ! empty( $users ) ? $users[0] : false;
+	}
+
+	$cached_id = $user ? (int) $user->ID : 0;
+
+	return $cached_id;
+}
+
+/**
+ * Maak automatisch concept-berichten aan voor nieuwe shorts in de feed.
+ *
+ * Elke video-ID wordt maar één keer verwerkt: een concept dat de redactie
+ * verwijdert, wordt bewust niet opnieuw aangemaakt.
+ *
+ * @param array $items Feed-items met video_id en title.
+ */
 function syc_sync_feed_drafts( $items ) {
 	$settings = syc_get_settings();
 
@@ -1592,80 +2259,91 @@ function syc_sync_feed_drafts( $items ) {
 		return;
 	}
 
-	// Voorkom dubbele runs bij parallelle front-end requests.
-	if ( get_transient( SYC_AUTODRAFT_LOCK_KEY ) ) {
+	// Voorkom dubbele runs bij parallelle cron- of beheerrequests.
+	$lock = syc_acquire_lock( SYC_AUTODRAFT_LOCK_KEY, MINUTE_IN_SECONDS );
+	if ( false === $lock ) {
 		return;
 	}
-	set_transient( SYC_AUTODRAFT_LOCK_KEY, 1, MINUTE_IN_SECONDS );
 
-	$map = get_option( SYC_AUTODRAFT_MAP_OPTION, array() );
-	$map = is_array( $map ) ? $map : array();
+	try {
+		$map = get_option( SYC_AUTODRAFT_MAP_OPTION, array() );
+		$map = is_array( $map ) ? $map : array();
 
-	$changed = false;
+		$changed           = false;
+		$default_author_id = syc_get_default_draft_author_id();
 
-	foreach ( $items as $item ) {
-		$video_id = isset( $item['video_id'] ) ? syc_sanitize_youtube_video_id( $item['video_id'] ) : '';
-		if ( '' === $video_id || isset( $map[ $video_id ] ) ) {
-			continue;
-		}
+		foreach ( $items as $item ) {
+			$video_id = isset( $item['video_id'] ) ? syc_sanitize_youtube_video_id( $item['video_id'] ) : '';
+			if ( '' === $video_id || isset( $map[ $video_id ] ) ) {
+				continue;
+			}
 
-		// Vangnet voor het geval de verwerkingsadministratie ooit verloren gaat.
-		$existing = get_posts(
-			array(
-				'post_type'      => 'post',
-				'post_status'    => 'any',
-				'posts_per_page' => 1,
-				'fields'         => 'ids',
-				'meta_key'       => '_syc_video_id',
-				'meta_value'     => $video_id,
-			)
-		);
+			// Vangnet voor het geval de verwerkingsadministratie ooit verloren gaat.
+			$existing = get_posts(
+				array(
+					'post_type'      => 'post',
+					'post_status'    => 'any',
+					'posts_per_page' => 1,
+					'fields'         => 'ids',
+					// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Eenmalige vangnetlookup van één post.
+					'meta_key'       => '_syc_video_id',
+					// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Nodig bij de begrensde metaquery hierboven.
+					'meta_value'     => $video_id,
+				)
+			);
 
-		if ( ! empty( $existing ) ) {
-			$map[ $video_id ] = (int) $existing[0];
+			if ( ! empty( $existing ) ) {
+				$map[ $video_id ] = (int) $existing[0];
+				$changed          = true;
+				continue;
+			}
+
+			$video_url = 'https://www.youtube.com/watch?v=' . $video_id;
+			$title     = isset( $item['title'] ) ? wp_strip_all_tags( $item['title'] ) : '';
+			if ( '' === $title ) {
+				$title = $video_url;
+			}
+
+			$content  = $video_url . "\n\n";
+			$content .= __( 'Dit concept is automatisch aangemaakt vanuit de YouTube-feed. Vul de tekst aan en publiceer het bericht; de link onder de carrouselvideo wordt bij publicatie automatisch gekoppeld.', 'scientias-youtube-carrousel' );
+
+			$post_args = array(
+				'post_type'    => 'post',
+				'post_status'  => 'draft',
+				'post_title'   => $title,
+				'post_content' => $content,
+				'meta_input'   => array(
+					'_syc_video_id' => $video_id,
+				),
+			);
+
+			if ( $default_author_id > 0 ) {
+				$post_args['post_author'] = $default_author_id;
+			}
+
+			$category_ids = syc_get_default_draft_category_ids();
+			if ( ! empty( $category_ids ) ) {
+				$post_args['post_category'] = $category_ids;
+			}
+
+			$post_id = wp_insert_post( $post_args, true );
+
+			if ( is_wp_error( $post_id ) || ! $post_id ) {
+				continue;
+			}
+
+			set_post_format( $post_id, 'video' );
+
+			$map[ $video_id ] = (int) $post_id;
 			$changed          = true;
-			continue;
 		}
 
-		$video_url = 'https://www.youtube.com/watch?v=' . $video_id;
-		$title     = isset( $item['title'] ) ? wp_strip_all_tags( $item['title'] ) : '';
-		if ( '' === $title ) {
-			$title = $video_url;
+		if ( $changed ) {
+			update_option( SYC_AUTODRAFT_MAP_OPTION, $map, false );
 		}
-
-		$content  = $video_url . "\n\n";
-		$content .= __( 'Dit concept is automatisch aangemaakt vanuit de YouTube-feed. Vul de tekst aan en publiceer het bericht; de link onder de carrouselvideo wordt bij publicatie automatisch gekoppeld.', 'scientias-youtube-carrousel' );
-
-		$post_args = array(
-			'post_type'    => 'post',
-			'post_status'  => 'draft',
-			'post_title'   => $title,
-			'post_content' => $content,
-			'meta_input'   => array(
-				'_syc_video_id' => $video_id,
-			),
-		);
-
-		$category_id = syc_get_default_draft_category_id();
-		if ( $category_id ) {
-			$post_args['post_category'] = array( $category_id );
-		}
-
-		$post_id = wp_insert_post( $post_args, true );
-
-		if ( is_wp_error( $post_id ) || ! $post_id ) {
-			continue;
-		}
-
-		$map[ $video_id ] = (int) $post_id;
-		$changed          = true;
+	} finally {
+		syc_release_lock( SYC_AUTODRAFT_LOCK_KEY, $lock );
 	}
-
-	if ( $changed ) {
-		update_option( SYC_AUTODRAFT_MAP_OPTION, $map, false );
-	}
-
-	delete_transient( SYC_AUTODRAFT_LOCK_KEY );
 }
 
 /**
@@ -1694,28 +2372,86 @@ function syc_maybe_set_link_override_on_publish( $new_status, $old_status, $post
 		return;
 	}
 
-	$settings = syc_normalize_settings( get_option( 'syc_settings', array() ) );
+	$updated = syc_update_settings_locked(
+		function ( $settings ) use ( $video_id, $permalink ) {
+			// Een handmatig gezette override van de redactie blijft staan.
+			if ( ! empty( $settings['link_overrides'][ $video_id ] ) ) {
+				return $settings;
+			}
 
-	// Een handmatig gezette override van de redactie blijft staan.
-	if ( ! empty( $settings['link_overrides'][ $video_id ] ) ) {
-		return;
+			if ( count( $settings['link_overrides'] ) >= SYC_MAX_LINK_OVERRIDES ) {
+				return new WP_Error( 'syc_link_limit', __( 'De automatische link kon niet worden opgeslagen omdat de override-limiet is bereikt.', 'scientias-youtube-carrousel' ) );
+			}
+
+			$settings['link_overrides'][ $video_id ] = esc_url_raw( $permalink );
+			return $settings;
+		}
+	);
+
+	if ( ! is_wp_error( $updated ) ) {
+		syc_purge_page_caches();
 	}
-
-	$settings['link_overrides'][ $video_id ] = esc_url_raw( $permalink );
-
-	update_option( 'syc_settings', $settings );
-
-	syc_clear_feed_caches();
 }
 add_action( 'transition_post_status', 'syc_maybe_set_link_override_on_publish', 10, 3 );
 
 /**
- * Haal items op uit een YouTube playlist via de YouTube Data API.
+ * Registreer playlistcaches voor gerichte cleanup bij verwijderen.
+ *
+ * @param string $playlist_id YouTube playlist-ID.
+ */
+function syc_track_playlist_cache( $playlist_id ) {
+	$playlist_id = syc_extract_youtube_playlist_id( $playlist_id );
+	if ( '' === $playlist_id ) {
+		return;
+	}
+
+	$registry                        = get_option( SYC_PLAYLIST_CACHE_REGISTRY_OPTION, array() );
+	$registry                        = is_array( $registry ) ? $registry : array();
+	$registry[ md5( $playlist_id ) ] = $playlist_id;
+	update_option( SYC_PLAYLIST_CACHE_REGISTRY_OPTION, $registry, false );
+}
+
+/**
+ * Lees de gecachete items van een YouTube playlist.
+ *
+ * Doet zelf nooit een YouTube API-call: de cache wordt uitsluitend op de
+ * achtergrond gevuld door {@see syc_refresh_all_feeds()}.
  *
  * @param string $playlist_id YouTube playlist-ID.
  * @return array|WP_Error
  */
 function syc_get_api_playlist_items( $playlist_id ) {
+	$playlist_id = syc_extract_youtube_playlist_id( $playlist_id );
+
+	if ( '' === $playlist_id ) {
+		return new WP_Error( 'syc_invalid_playlist_id', __( 'Ongeldige YouTube playlist-ID.', 'scientias-youtube-carrousel' ) );
+	}
+
+	$cache_key = SYC_PLAYLIST_CACHE_PREFIX . md5( $playlist_id );
+	$cached    = get_transient( $cache_key );
+	if ( is_array( $cached ) ) {
+		return $cached;
+	}
+
+	$stale = get_option( SYC_PLAYLIST_STALE_PREFIX . md5( $playlist_id ), null );
+	if ( is_array( $stale ) ) {
+		return $stale;
+	}
+
+	return new WP_Error( 'syc_playlist_cache_empty', __( 'De playlist-cache is nog niet gevuld; deze wordt periodiek op de achtergrond ververst.', 'scientias-youtube-carrousel' ) );
+}
+
+/**
+ * Haal items op uit een YouTube playlist via de YouTube Data API en cache
+ * het resultaat.
+ *
+ * Wordt uitsluitend aangeroepen vanuit {@see syc_refresh_all_feeds()}, nooit
+ * tijdens het laden van een bezoekerspagina.
+ *
+ * @param string $playlist_id YouTube playlist-ID.
+ * @return array|WP_Error
+ */
+function syc_fetch_and_cache_api_playlist_items( $playlist_id ) {
 	$settings    = syc_get_settings();
 	$playlist_id = syc_extract_youtube_playlist_id( $playlist_id );
 
@@ -1727,12 +2463,7 @@ function syc_get_api_playlist_items( $playlist_id ) {
 		return new WP_Error( 'syc_missing_api_key', __( 'YouTube API sleutel ontbreekt.', 'scientias-youtube-carrousel' ) );
 	}
 
-	$cache_key = SYC_PLAYLIST_CACHE_PREFIX . md5( $playlist_id );
-	$cached    = get_transient( $cache_key );
-	if ( is_array( $cached ) ) {
-		return $cached;
-	}
-
+	$cache_key   = SYC_PLAYLIST_CACHE_PREFIX . md5( $playlist_id );
 	$max_results = min( max( 1, absint( $settings['max_items'] ) ), 50 );
 	$url         = add_query_arg(
 		array(
@@ -1747,7 +2478,7 @@ function syc_get_api_playlist_items( $playlist_id ) {
 	$response = wp_remote_get(
 		$url,
 		array(
-			'timeout' => 10,
+			'timeout' => SYC_API_REQUEST_TIMEOUT,
 		)
 	);
 
@@ -1757,13 +2488,14 @@ function syc_get_api_playlist_items( $playlist_id ) {
 
 	$code = wp_remote_retrieve_response_code( $response );
 	if ( 200 !== $code ) {
+		/* translators: %d: HTTP status code. */
 		return new WP_Error( 'syc_playlist_api_http_error', sprintf( __( 'YouTube API fout: HTTP %d', 'scientias-youtube-carrousel' ), (int) $code ) );
 	}
 
 	$body = wp_remote_retrieve_body( $response );
 	$data = json_decode( $body, true );
 
-	if ( ! is_array( $data ) || empty( $data['items'] ) ) {
+	if ( ! is_array( $data ) || ! isset( $data['items'] ) || ! is_array( $data['items'] ) ) {
 		return new WP_Error( 'syc_playlist_api_empty', __( 'Geen items gevonden in de YouTube playlist.', 'scientias-youtube-carrousel' ) );
 	}
 
@@ -1774,9 +2506,13 @@ function syc_get_api_playlist_items( $playlist_id ) {
 			continue;
 		}
 
-		$video_id = $item['snippet']['resourceId']['videoId'];
-		$title    = isset( $item['snippet']['title'] ) ? $item['snippet']['title'] : '';
-		$thumb    = '';
+		$video_id = syc_sanitize_youtube_video_id( $item['snippet']['resourceId']['videoId'] );
+		if ( '' === $video_id ) {
+			continue;
+		}
+
+		$title = isset( $item['snippet']['title'] ) ? sanitize_text_field( wp_strip_all_tags( $item['snippet']['title'] ) ) : '';
+		$thumb = '';
 
 		if ( ! empty( $item['snippet']['thumbnails']['maxres']['url'] ) ) {
 			$thumb = $item['snippet']['thumbnails']['maxres']['url'];
@@ -1786,9 +2522,7 @@ function syc_get_api_playlist_items( $playlist_id ) {
 			$thumb = $item['snippet']['thumbnails']['medium']['url'];
 		}
 
-		if ( '' === $thumb ) {
-			$thumb = syc_get_youtube_thumbnail_url( $video_id );
-		}
+		$thumb = '' !== $thumb ? esc_url_raw( $thumb ) : syc_get_youtube_thumbnail_url( $video_id );
 
 		$items[] = array(
 			'video_id' => $video_id,
@@ -1797,11 +2531,9 @@ function syc_get_api_playlist_items( $playlist_id ) {
 		);
 	}
 
-	if ( empty( $items ) ) {
-		return new WP_Error( 'syc_playlist_api_empty_items', __( 'Er zijn geen geldige playlist-items gevonden.', 'scientias-youtube-carrousel' ) );
-	}
-
 	set_transient( $cache_key, $items, SYC_API_FEED_CACHE_TTL );
+	update_option( SYC_PLAYLIST_STALE_PREFIX . md5( $playlist_id ), $items, false );
+	syc_track_playlist_cache( $playlist_id );
 
 	return $items;
 }
@@ -1904,7 +2636,7 @@ function syc_render_carrousel_items( $items, $title ) {
 function syc_render_carrousel_shortcode( $atts ) {
 	$atts = shortcode_atts(
 		array(
-			'title' => __( 'Video', 'scientias-youtube-carrousel' ),
+			'title' => '',
 			'limit' => -1,
 			'name'  => '',
 		),
@@ -1958,7 +2690,7 @@ function syc_render_carrousel_shortcode( $atts ) {
 		}
 
 		$default_title = ! empty( $carrousel['name'] ) ? $carrousel['name'] : __( 'Video', 'scientias-youtube-carrousel' );
-		$title         = __( 'Video', 'scientias-youtube-carrousel' ) === $atts['title'] ? $default_title : $atts['title'];
+		$title         = '' !== $atts['title'] ? $atts['title'] : $default_title;
 
 		return syc_render_carrousel_items( $items, $title );
 	}
@@ -2019,6 +2751,8 @@ function syc_render_carrousel_shortcode( $atts ) {
 		wp_reset_postdata();
 	}
 
-	return syc_render_carrousel_items( $items, $atts['title'] );
+	$title = '' !== $atts['title'] ? $atts['title'] : __( 'Video', 'scientias-youtube-carrousel' );
+
+	return syc_render_carrousel_items( $items, $title );
 }
 add_shortcode( 'scientias_youtube_carrousel', 'syc_render_carrousel_shortcode' );
