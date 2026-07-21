@@ -2,7 +2,9 @@
 /**
  * Plugin Name: Scientias YouTube Carrousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.1.4.1
+ * Version:     1.5.1
+ * Requires at least: 6.0
+ * Requires PHP: 7.4
  * Author:      Scientias
  * Text Domain: scientias-youtube-carrousel
  *
@@ -13,11 +15,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.1.4.1' );
+define( 'SYC_VERSION', '1.5.1' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
 define( 'SYC_API_FEED_STALE_OPTION', 'syc_api_feed_stale' );
 define( 'SYC_PLAYLIST_CACHE_PREFIX', 'syc_playlist_cache_' );
 define( 'SYC_PLAYLIST_STALE_PREFIX', 'syc_playlist_stale_' );
+define( 'SYC_PLAYLIST_META_PREFIX', 'syc_playlist_feed_meta_' );
 // Cache-TTL bewust langer dan het cron-ververs-interval, zodat een net-te-late
 // cronrun geen gat laat vallen waarin bezoekers een lege cache treffen.
 define( 'SYC_API_FEED_CACHE_TTL', 15 * MINUTE_IN_SECONDS );
@@ -127,6 +130,91 @@ function syc_get_main_feed_storage_keys( $settings = null ) {
 		'cache' => SYC_API_FEED_CACHE_KEY . '_' . $fingerprint,
 		'stale' => SYC_API_FEED_STALE_OPTION . '_' . $fingerprint,
 	);
+}
+
+/**
+ * Sla de uitkomst van een hoofdfeedpoging op zonder het vorige succes te verliezen.
+ *
+ * @param string        $status   Status: ok of error.
+ * @param int|null      $items    Aantal ontvangen items bij succes.
+ * @param WP_Error|null $error    Fout bij een mislukte poging.
+ * @param string        $feed_key Cachesleutel van de aangevraagde bron.
+ */
+function syc_update_main_feed_meta( $status, $items = null, $error = null, $feed_key = '' ) {
+	$meta = get_option( 'syc_api_feed_meta', array() );
+	$meta = is_array( $meta ) ? $meta : array();
+	if ( isset( $meta['status'] ) && 'ok' === $meta['status'] ) {
+		if ( empty( $meta['last_success_at'] ) && ! empty( $meta['updated_at'] ) ) {
+			$meta['last_success_at'] = (int) $meta['updated_at'];
+		}
+		if ( ! isset( $meta['last_success_items'] ) && isset( $meta['items'] ) ) {
+			$meta['last_success_items'] = (int) $meta['items'];
+		}
+	}
+
+	$meta['status']          = 'ok' === $status ? 'ok' : 'error';
+	$meta['updated_at']      = time();
+	$meta['last_attempt_at'] = $meta['updated_at'];
+	$meta['feed_key']        = $feed_key;
+
+	if ( 'ok' === $meta['status'] ) {
+		$meta['items']              = max( 0, (int) $items );
+		$meta['last_success_items'] = $meta['items'];
+		$meta['last_success_at']    = $meta['updated_at'];
+		$meta['message']            = '';
+		$meta['code']               = '';
+	} elseif ( $error instanceof WP_Error ) {
+		$meta['message'] = $error->get_error_message();
+		$meta['code']    = $error->get_error_code();
+	}
+
+	update_option( 'syc_api_feed_meta', $meta, false );
+}
+
+/**
+ * Geef de statusoptienaam voor een playlist.
+ *
+ * @param string $playlist_id YouTube playlist-ID.
+ * @return string
+ */
+function syc_get_playlist_meta_option_name( $playlist_id ) {
+	return SYC_PLAYLIST_META_PREFIX . md5( syc_extract_youtube_playlist_id( $playlist_id ) );
+}
+
+/**
+ * Sla de uitkomst van een playlistpoging op zonder het vorige succes te verliezen.
+ *
+ * @param string        $playlist_id YouTube playlist-ID.
+ * @param string        $status      Status: ok of error.
+ * @param int|null      $items       Aantal ontvangen items bij succes.
+ * @param WP_Error|null $error       Fout bij een mislukte poging.
+ */
+function syc_update_playlist_feed_meta( $playlist_id, $status, $items = null, $error = null ) {
+	$playlist_id = syc_extract_youtube_playlist_id( $playlist_id );
+	if ( '' === $playlist_id ) {
+		return;
+	}
+
+	$option_name              = syc_get_playlist_meta_option_name( $playlist_id );
+	$meta                     = get_option( $option_name, array() );
+	$meta                     = is_array( $meta ) ? $meta : array();
+	$meta['status']           = 'ok' === $status ? 'ok' : 'error';
+	$meta['updated_at']       = time();
+	$meta['last_attempt_at']  = $meta['updated_at'];
+	$meta['playlist_id_hash'] = md5( $playlist_id );
+
+	if ( 'ok' === $meta['status'] ) {
+		$meta['items']              = max( 0, (int) $items );
+		$meta['last_success_items'] = $meta['items'];
+		$meta['last_success_at']    = $meta['updated_at'];
+		$meta['message']            = '';
+		$meta['code']               = '';
+	} elseif ( $error instanceof WP_Error ) {
+		$meta['message'] = $error->get_error_message();
+		$meta['code']    = $error->get_error_code();
+	}
+
+	update_option( $option_name, $meta, false );
 }
 
 /**
@@ -328,6 +416,7 @@ function syc_maybe_release_settings_lock( $option ) {
 		if ( ! empty( $GLOBALS['syc_removed_main_feed_keys'] ) ) {
 			delete_transient( $GLOBALS['syc_removed_main_feed_keys']['cache'] );
 			delete_option( $GLOBALS['syc_removed_main_feed_keys']['stale'] );
+			delete_option( 'syc_api_feed_meta' );
 			unset( $GLOBALS['syc_removed_main_feed_keys'] );
 		}
 
@@ -407,6 +496,7 @@ function syc_cleanup_playlist_caches( $playlist_ids ) {
 			$hash = md5( $playlist_id );
 			delete_transient( SYC_PLAYLIST_CACHE_PREFIX . $hash );
 			delete_option( SYC_PLAYLIST_STALE_PREFIX . $hash );
+			delete_option( SYC_PLAYLIST_META_PREFIX . $hash );
 			unset( $registry[ $hash ] );
 		}
 
@@ -1293,8 +1383,17 @@ function syc_add_settings_page() {
 		__( 'YouTube carrousel', 'scientias-youtube-carrousel' ),
 		'manage_options',
 		'syc-settings',
-		'syc_render_settings_page',
+		'syc_render_dashboard_page',
 		'dashicons-video-alt3'
+	);
+
+	add_submenu_page(
+		'syc-settings',
+		__( 'YouTube carrousel dashboard', 'scientias-youtube-carrousel' ),
+		__( 'Dashboard', 'scientias-youtube-carrousel' ),
+		'manage_options',
+		'syc-settings',
+		'syc_render_dashboard_page'
 	);
 
 	add_submenu_page(
@@ -1302,7 +1401,7 @@ function syc_add_settings_page() {
 		__( 'YouTube feed instellingen', 'scientias-youtube-carrousel' ),
 		__( 'Feed instellingen', 'scientias-youtube-carrousel' ),
 		'manage_options',
-		'syc-settings',
+		'syc-feed-settings',
 		'syc_render_settings_page'
 	);
 
@@ -1344,6 +1443,539 @@ function syc_get_settings() {
 }
 
 /**
+ * Bewaar een eenmalige beheermelding voor de huidige gebruiker.
+ *
+ * @param array $notice Melding met type en message.
+ */
+function syc_store_admin_notice( $notice ) {
+	set_transient( 'syc_admin_notice_' . get_current_user_id(), $notice, 2 * MINUTE_IN_SECONDS );
+}
+
+/**
+ * Lees en verwijder de eenmalige beheermelding voor de huidige gebruiker.
+ *
+ * @return array
+ */
+function syc_take_admin_notice() {
+	$key    = 'syc_admin_notice_' . get_current_user_id();
+	$notice = get_transient( $key );
+	delete_transient( $key );
+
+	// Compatibiliteit met de 1.1.4.1-refreshmelding.
+	if ( ! is_array( $notice ) ) {
+		$legacy_key = 'syc_manual_refresh_notice_' . get_current_user_id();
+		$notice     = get_transient( $legacy_key );
+		delete_transient( $legacy_key );
+	}
+
+	return is_array( $notice ) ? $notice : array();
+}
+
+/**
+ * Formatteer een opgeslagen Unix-tijd voor het dashboard.
+ *
+ * @param int $timestamp Unix-tijd.
+ * @return string
+ */
+function syc_format_dashboard_time( $timestamp ) {
+	if ( $timestamp <= 0 ) {
+		return __( 'Nog niet', 'scientias-youtube-carrousel' );
+	}
+
+	return wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $timestamp );
+}
+
+/**
+ * Haal een timestamp uit nieuwe of oude feedmetadata.
+ *
+ * @param array  $meta Metadata.
+ * @param string $key  Gewenste sleutel.
+ * @return int
+ */
+function syc_get_feed_meta_time( $meta, $key ) {
+	if ( isset( $meta[ $key ] ) ) {
+		return (int) $meta[ $key ];
+	}
+
+	if ( 'last_attempt_at' === $key && isset( $meta['updated_at'] ) ) {
+		return (int) $meta['updated_at'];
+	}
+
+	if ( 'last_success_at' === $key && isset( $meta['status'], $meta['updated_at'] ) && 'ok' === $meta['status'] ) {
+		return (int) $meta['updated_at'];
+	}
+
+	return 0;
+}
+
+/**
+ * Maak een compacte statusbadge voor het dashboard.
+ *
+ * @param string $label Badge-tekst.
+ * @param string $type  success, warning, error of neutral.
+ * @return string
+ */
+function syc_get_dashboard_badge( $label, $type ) {
+	$colors = array(
+		'success' => array( '#edfaef', '#116329' ),
+		'warning' => array( '#fff8e5', '#8a5a00' ),
+		'error'   => array( '#fcf0f1', '#8a2424' ),
+		'neutral' => array( '#f0f0f1', '#3c434a' ),
+	);
+	$color  = isset( $colors[ $type ] ) ? $colors[ $type ] : $colors['neutral'];
+
+	return sprintf(
+		'<span style="display:inline-block;padding:3px 9px;border-radius:999px;background:%1$s;color:%2$s;font-weight:600;">%3$s</span>',
+		esc_attr( $color[0] ),
+		esc_attr( $color[1] ),
+		esc_html( $label )
+	);
+}
+
+/**
+ * Verzamel in batches de bruikbare post-ID's voor de hoofdfeedfallback.
+ *
+ * @param int $limit Maximumaantal items; -1 voor onbeperkt.
+ * @return array
+ */
+function syc_get_manual_fallback_post_ids( $limit = -1 ) {
+	if ( 0 === $limit ) {
+		return array();
+	}
+
+	$eligible   = array();
+	$offset     = 0;
+	$batch_size = $limit > 0 ? max( 20, min( 100, $limit * 2 ) ) : 100;
+
+	do {
+		$post_ids    = get_posts(
+			array(
+				'post_type'              => 'syc_video',
+				'post_status'            => 'publish',
+				'posts_per_page'         => $batch_size,
+				'offset'                 => $offset,
+				'orderby'                => 'date',
+				'order'                  => 'DESC',
+				'fields'                 => 'ids',
+				'no_found_rows'          => true,
+				'update_post_meta_cache' => true,
+				'update_post_term_cache' => false,
+			)
+		);
+		$batch_count = count( $post_ids );
+
+		foreach ( $post_ids as $post_id ) {
+			$video_id = syc_extract_youtube_video_id( get_post_meta( $post_id, '_syc_video_url', true ) );
+			if ( '' === $video_id ) {
+				continue;
+			}
+			$eligible[] = $post_id;
+			if ( $limit > 0 && count( $eligible ) >= $limit ) {
+				return $eligible;
+			}
+		}
+
+		$offset += $batch_size;
+	} while ( $batch_count === $batch_size );
+
+	return $eligible;
+}
+
+/**
+ * Bouw zichtbare losse video-items voor de hoofdfeedfallback.
+ *
+ * @param int $limit Maximumaantal items; -1 voor onbeperkt.
+ * @return array
+ */
+function syc_get_manual_fallback_items( $limit = -1 ) {
+	$items = array();
+	foreach ( syc_get_manual_fallback_post_ids( $limit ) as $post_id ) {
+		$video_url = get_post_meta( $post_id, '_syc_video_url', true );
+		$video_id  = syc_extract_youtube_video_id( $video_url );
+		$thumb_url = get_the_post_thumbnail_url( $post_id, 'large' );
+		$items[]   = array(
+			'title'     => get_the_title( $post_id ),
+			'video_url' => $video_url,
+			'thumb_url' => $thumb_url ? $thumb_url : syc_get_youtube_thumbnail_url( $video_id ),
+			'link_url'  => get_post_meta( $post_id, '_syc_link_url', true ),
+		);
+	}
+
+	return $items;
+}
+
+/**
+ * Bepaal de actuele dashboardstatus van de hoofdfeed.
+ *
+ * @param array $settings Plugininstellingen.
+ * @return array
+ */
+function syc_get_main_dashboard_status( $settings ) {
+	$keys  = syc_get_main_feed_storage_keys( $settings );
+	$cache = get_transient( $keys['cache'] );
+	$stale = get_option( $keys['stale'], null );
+	$meta  = get_option( 'syc_api_feed_meta', array() );
+	$meta  = is_array( $meta ) ? $meta : array();
+	if ( ! empty( $meta['feed_key'] ) && $keys['cache'] !== $meta['feed_key'] ) {
+		$meta = array();
+	}
+	$configured  = ! empty( $settings['api_key'] ) && ! empty( $settings['channel_id'] );
+	$source      = __( 'Geen beschikbare bron', 'scientias-youtube-carrousel' );
+	$source_type = 'error';
+	$items       = 0;
+
+	if ( is_array( $cache ) && ! empty( $cache ) ) {
+		$source      = __( 'Actuele API-cache', 'scientias-youtube-carrousel' );
+		$source_type = 'success';
+		$items       = count( $cache );
+	} elseif ( is_array( $stale ) && ! empty( $stale ) ) {
+		$source      = __( 'Laatst bekende feed', 'scientias-youtube-carrousel' );
+		$source_type = 'warning';
+		$items       = count( $stale );
+	} else {
+		$manual_count = count( syc_get_manual_fallback_post_ids() );
+		if ( $manual_count > 0 ) {
+			$source      = __( 'Handmatige fallback', 'scientias-youtube-carrousel' );
+			$source_type = 'warning';
+			$items       = $manual_count;
+		} elseif ( is_array( $cache ) || is_array( $stale ) ) {
+			$source      = __( 'Lege YouTube-feed', 'scientias-youtube-carrousel' );
+			$source_type = 'warning';
+		}
+	}
+
+	$status      = __( 'Wacht op eerste verversing', 'scientias-youtube-carrousel' );
+	$status_type = 'neutral';
+	if ( ! $configured ) {
+		$status      = __( 'Configuratie ontbreekt', 'scientias-youtube-carrousel' );
+		$status_type = 'error';
+	} elseif ( isset( $meta['status'] ) && 'error' === $meta['status'] ) {
+		$status      = __( 'Laatste poging mislukt', 'scientias-youtube-carrousel' );
+		$status_type = 'error';
+	} elseif ( 'success' === $source_type ) {
+		$status      = __( 'Gezond', 'scientias-youtube-carrousel' );
+		$status_type = 'success';
+	} elseif ( 'warning' === $source_type ) {
+		$status      = __( 'Fallback actief', 'scientias-youtube-carrousel' );
+		$status_type = 'warning';
+	}
+
+	return array(
+		'status'          => $status,
+		'status_type'     => $status_type,
+		'source'          => $source,
+		'source_type'     => $source_type,
+		'items'           => $items,
+		'last_attempt_at' => syc_get_feed_meta_time( $meta, 'last_attempt_at' ),
+		'last_success_at' => syc_get_feed_meta_time( $meta, 'last_success_at' ),
+		'message'         => isset( $meta['message'] ) ? (string) $meta['message'] : '',
+	);
+}
+
+/**
+ * Bepaal de actuele dashboardstatus van een playlistcarrousel.
+ *
+ * @param string $playlist_id YouTube playlist-ID.
+ * @param array  $manual_items Handmatige fallbackitems.
+ * @return array
+ */
+function syc_get_playlist_dashboard_status( $playlist_id, $manual_items ) {
+	$playlist_id  = syc_extract_youtube_playlist_id( $playlist_id );
+	$hash         = md5( $playlist_id );
+	$cache        = get_transient( SYC_PLAYLIST_CACHE_PREFIX . $hash );
+	$stale        = get_option( SYC_PLAYLIST_STALE_PREFIX . $hash, null );
+	$meta         = get_option( SYC_PLAYLIST_META_PREFIX . $hash, array() );
+	$meta         = is_array( $meta ) ? $meta : array();
+	$manual_count = is_array( $manual_items ) ? count( $manual_items ) : 0;
+	$source       = __( 'Geen beschikbare bron', 'scientias-youtube-carrousel' );
+	$source_type  = 'error';
+	$items        = 0;
+
+	if ( is_array( $cache ) && ! empty( $cache ) ) {
+		$source      = __( 'Actuele playlistcache', 'scientias-youtube-carrousel' );
+		$source_type = 'success';
+		$items       = count( $cache );
+	} elseif ( is_array( $stale ) && ! empty( $stale ) ) {
+		$source      = __( 'Laatst bekende playlist', 'scientias-youtube-carrousel' );
+		$source_type = 'warning';
+		$items       = count( $stale );
+	} elseif ( $manual_count > 0 ) {
+		$source      = __( 'Handmatige fallback', 'scientias-youtube-carrousel' );
+		$source_type = 'warning';
+		$items       = $manual_count;
+	} elseif ( is_array( $cache ) || is_array( $stale ) ) {
+		$source      = __( 'Lege playlist', 'scientias-youtube-carrousel' );
+		$source_type = 'warning';
+	}
+
+	$status      = __( 'Wacht op eerste verversing', 'scientias-youtube-carrousel' );
+	$status_type = 'neutral';
+	if ( isset( $meta['status'] ) && 'error' === $meta['status'] ) {
+		$status      = __( 'Laatste poging mislukt', 'scientias-youtube-carrousel' );
+		$status_type = 'error';
+	} elseif ( 'success' === $source_type ) {
+		$status      = __( 'Gezond', 'scientias-youtube-carrousel' );
+		$status_type = 'success';
+	} elseif ( 'warning' === $source_type ) {
+		$status      = __( 'Fallback actief', 'scientias-youtube-carrousel' );
+		$status_type = 'warning';
+	}
+
+	return array(
+		'status'          => $status,
+		'status_type'     => $status_type,
+		'source'          => $source,
+		'source_type'     => $source_type,
+		'items'           => $items,
+		'last_attempt_at' => syc_get_feed_meta_time( $meta, 'last_attempt_at' ),
+		'last_success_at' => syc_get_feed_meta_time( $meta, 'last_success_at' ),
+		'message'         => isset( $meta['message'] ) ? (string) $meta['message'] : '',
+	);
+}
+
+/**
+ * Test de YouTube-configuratie zonder caches of concepten te wijzigen.
+ *
+ * @return true|WP_Error
+ */
+function syc_test_youtube_connection() {
+	$settings = syc_get_settings();
+	if ( empty( $settings['api_key'] ) || empty( $settings['channel_id'] ) ) {
+		return new WP_Error( 'syc_missing_settings', __( 'YouTube API sleutel of kanaal ID ontbreekt.', 'scientias-youtube-carrousel' ) );
+	}
+
+	$playlist_id = syc_get_shorts_playlist_id( $settings['channel_id'] );
+	if ( ! $playlist_id ) {
+		return new WP_Error( 'syc_invalid_channel_id', __( 'Het kanaal-ID is ongeldig.', 'scientias-youtube-carrousel' ) );
+	}
+
+	$response = wp_remote_get(
+		add_query_arg(
+			array(
+				'part'       => 'snippet',
+				'playlistId' => $playlist_id,
+				'maxResults' => 1,
+				'key'        => $settings['api_key'],
+			),
+			'https://www.googleapis.com/youtube/v3/playlistItems'
+		),
+		array( 'timeout' => SYC_API_REQUEST_TIMEOUT )
+	);
+
+	if ( is_wp_error( $response ) ) {
+		return $response;
+	}
+
+	$code = wp_remote_retrieve_response_code( $response );
+	if ( 200 !== $code ) {
+		return new WP_Error(
+			'syc_connection_http_error',
+			sprintf(
+				/* translators: %d: HTTP status code. */
+				__( 'YouTube antwoordde met HTTP %d.', 'scientias-youtube-carrousel' ),
+				(int) $code
+			)
+		);
+	}
+
+	$data = json_decode( wp_remote_retrieve_body( $response ), true );
+	if ( ! is_array( $data ) || ! isset( $data['items'] ) ) {
+		return new WP_Error( 'syc_connection_invalid_response', __( 'YouTube gaf geen geldig API-antwoord.', 'scientias-youtube-carrousel' ) );
+	}
+
+	return true;
+}
+
+/**
+ * Verwerk de expliciete verbindingstest via Post/Redirect/Get.
+ */
+function syc_handle_connection_test() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Je hebt geen rechten om de verbinding te testen.', 'scientias-youtube-carrousel' ) );
+	}
+	check_admin_referer( 'syc_connection_test_action', 'syc_connection_test_nonce' );
+
+	$result = syc_test_youtube_connection();
+	$notice = is_wp_error( $result )
+		? array(
+			'type'    => 'error',
+			'message' => sprintf(
+				/* translators: %s: connection error. */
+				__( 'Verbindingstest mislukt: %s', 'scientias-youtube-carrousel' ),
+				$result->get_error_message()
+			),
+		)
+		: array(
+			'type'    => 'success',
+			'message' => __( 'De verbinding met de YouTube Data API werkt.', 'scientias-youtube-carrousel' ),
+		);
+
+	syc_store_admin_notice( $notice );
+	wp_safe_redirect( admin_url( 'admin.php?page=syc-settings' ) );
+	exit;
+}
+add_action( 'admin_post_syc_connection_test', 'syc_handle_connection_test' );
+
+/**
+ * Render het redactionele feeddashboard.
+ */
+function syc_render_dashboard_page() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return;
+	}
+
+	$settings         = syc_get_settings();
+	$main_status      = syc_get_main_dashboard_status( $settings );
+	$notice           = syc_take_admin_notice();
+	$next_refresh     = wp_next_scheduled( SYC_CRON_HOOK );
+	$playlist_sources = array();
+
+	foreach ( $settings['custom_carrousels'] as $slug => $carrousel ) {
+		if ( empty( $carrousel['playlist_id'] ) ) {
+			continue;
+		}
+		$playlist_sources[] = array(
+			'name'  => ! empty( $carrousel['name'] ) ? $carrousel['name'] : $slug,
+			'id'    => $carrousel['playlist_id'],
+			'items' => $carrousel['items'],
+		);
+	}
+
+	$playlist_per_page = 20;
+	$playlist_total    = count( $playlist_sources );
+	$playlist_pages    = max( 1, (int) ceil( $playlist_total / $playlist_per_page ) );
+	// Alleen dashboardnavigatie; deze waarde wijzigt geen gegevens.
+	// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+	$playlist_page = isset( $_GET['syc_playlist_page'] ) ? max( 1, absint( $_GET['syc_playlist_page'] ) ) : 1;
+	$playlist_page = min( $playlist_page, $playlist_pages );
+	$playlist_rows = array();
+	foreach ( array_slice( $playlist_sources, ( $playlist_page - 1 ) * $playlist_per_page, $playlist_per_page ) as $carrousel ) {
+		$playlist_rows[] = array(
+			'name'   => $carrousel['name'],
+			'id'     => $carrousel['id'],
+			'status' => syc_get_playlist_dashboard_status( $carrousel['id'], $carrousel['items'] ),
+		);
+	}
+	?>
+	<div class="wrap">
+		<h1><?php esc_html_e( 'YouTube carrousel dashboard', 'scientias-youtube-carrousel' ); ?></h1>
+		<p><?php esc_html_e( 'Controleer welke videobron bezoekers zien en of de automatische verversing gezond is.', 'scientias-youtube-carrousel' ); ?></p>
+
+		<?php if ( ! empty( $notice ) ) : ?>
+			<div class="notice notice-<?php echo esc_attr( $notice['type'] ); ?> is-dismissible"><p><?php echo esc_html( $notice['message'] ); ?></p></div>
+		<?php endif; ?>
+
+		<?php if ( empty( $settings['api_key'] ) || empty( $settings['channel_id'] ) ) : ?>
+			<div class="notice notice-error inline">
+				<p>
+					<?php esc_html_e( 'De automatische hoofdfeed is niet geconfigureerd. Bezoekers zien nu alleen beschikbare fallbackvideo’s.', 'scientias-youtube-carrousel' ); ?>
+					<a href="<?php echo esc_url( admin_url( 'admin.php?page=syc-feed-settings' ) ); ?>"><?php esc_html_e( 'Feed instellen', 'scientias-youtube-carrousel' ); ?></a>
+				</p>
+			</div>
+		<?php endif; ?>
+
+		<?php if ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON ) : ?>
+			<div class="notice notice-warning inline"><p><?php esc_html_e( 'WP-Cron is uitgeschakeld. Zorg dat een servercron wp-cron.php regelmatig aanroept.', 'scientias-youtube-carrousel' ); ?></p></div>
+		<?php elseif ( ! $next_refresh ) : ?>
+			<div class="notice notice-error inline"><p><?php esc_html_e( 'Er staat geen automatische feedverversing gepland. Herlaad deze pagina of deactiveer en activeer de plugin opnieuw.', 'scientias-youtube-carrousel' ); ?></p></div>
+		<?php endif; ?>
+
+		<?php if ( 'warning' === $main_status['source_type'] ) : ?>
+			<div class="notice notice-warning inline"><p><?php echo esc_html( sprintf( /* translators: %s: currently active fallback source. */ __( 'Let op: bezoekers zien momenteel de bron “%s” in plaats van een actuele API-feed.', 'scientias-youtube-carrousel' ), $main_status['source'] ) ); ?></p></div>
+		<?php endif; ?>
+
+		<div style="display:flex;gap:10px;align-items:center;margin:20px 0;flex-wrap:wrap;">
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="syc_connection_test" />
+				<?php wp_nonce_field( 'syc_connection_test_action', 'syc_connection_test_nonce' ); ?>
+				<?php submit_button( __( 'Verbinding testen', 'scientias-youtube-carrousel' ), 'secondary', 'submit', false ); ?>
+			</form>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="syc_manual_refresh" />
+				<?php wp_nonce_field( 'syc_manual_refresh_action', 'syc_manual_refresh_nonce' ); ?>
+				<?php submit_button( __( 'Feeds direct verversen', 'scientias-youtube-carrousel' ), 'primary', 'submit', false ); ?>
+			</form>
+			<a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=syc-feed-settings' ) ); ?>"><?php esc_html_e( 'Feed instellingen', 'scientias-youtube-carrousel' ); ?></a>
+		</div>
+
+		<div class="postbox" style="max-width:1000px;">
+			<div class="postbox-header"><h2 class="hndle"><?php esc_html_e( 'Hoofdfeed', 'scientias-youtube-carrousel' ); ?></h2></div>
+			<div class="inside">
+				<table class="widefat striped">
+					<tbody>
+						<tr><th scope="row" style="width:220px;"><?php esc_html_e( 'Gezondheid', 'scientias-youtube-carrousel' ); ?></th><td><?php echo wp_kses_post( syc_get_dashboard_badge( $main_status['status'], $main_status['status_type'] ) ); ?></td></tr>
+						<tr><th scope="row"><?php esc_html_e( 'Actieve bron', 'scientias-youtube-carrousel' ); ?></th><td><?php echo wp_kses_post( syc_get_dashboard_badge( $main_status['source'], $main_status['source_type'] ) ); ?></td></tr>
+						<tr><th scope="row"><?php esc_html_e( 'Zichtbare items', 'scientias-youtube-carrousel' ); ?></th><td><?php echo esc_html( (string) $main_status['items'] ); ?></td></tr>
+						<tr><th scope="row"><?php esc_html_e( 'Laatste succesvolle verversing', 'scientias-youtube-carrousel' ); ?></th><td><?php echo esc_html( syc_format_dashboard_time( $main_status['last_success_at'] ) ); ?></td></tr>
+						<tr><th scope="row"><?php esc_html_e( 'Laatste poging', 'scientias-youtube-carrousel' ); ?></th><td><?php echo esc_html( syc_format_dashboard_time( $main_status['last_attempt_at'] ) ); ?></td></tr>
+						<tr><th scope="row"><?php esc_html_e( 'Volgende croncontrole', 'scientias-youtube-carrousel' ); ?></th><td><?php echo esc_html( syc_format_dashboard_time( (int) $next_refresh ) ); ?></td></tr>
+						<?php if ( '' !== $main_status['message'] ) : ?>
+							<tr><th scope="row"><?php esc_html_e( 'Laatste fout', 'scientias-youtube-carrousel' ); ?></th><td><?php echo esc_html( $main_status['message'] ); ?></td></tr>
+						<?php endif; ?>
+					</tbody>
+				</table>
+			</div>
+		</div>
+
+		<h2><?php esc_html_e( 'Playlistcarrousels', 'scientias-youtube-carrousel' ); ?></h2>
+		<?php if ( empty( $playlist_rows ) ) : ?>
+			<p><?php esc_html_e( 'Er zijn nog geen extra carrousels met een YouTube-playlist ingesteld.', 'scientias-youtube-carrousel' ); ?> <a href="<?php echo esc_url( admin_url( 'admin.php?page=syc-custom-carrousels' ) ); ?>"><?php esc_html_e( 'Extra carrousel toevoegen', 'scientias-youtube-carrousel' ); ?></a></p>
+		<?php else : ?>
+			<table class="widefat striped" style="max-width:1200px;">
+				<thead><tr><th><?php esc_html_e( 'Carrousel', 'scientias-youtube-carrousel' ); ?></th><th><?php esc_html_e( 'Gezondheid', 'scientias-youtube-carrousel' ); ?></th><th><?php esc_html_e( 'Actieve bron', 'scientias-youtube-carrousel' ); ?></th><th><?php esc_html_e( 'Items', 'scientias-youtube-carrousel' ); ?></th><th><?php esc_html_e( 'Laatste succes', 'scientias-youtube-carrousel' ); ?></th><th><?php esc_html_e( 'Laatste poging', 'scientias-youtube-carrousel' ); ?></th></tr></thead>
+				<tbody>
+					<?php foreach ( $playlist_rows as $row ) : ?>
+						<tr>
+							<td>
+								<strong><?php echo esc_html( $row['name'] ); ?></strong><br><code><?php echo esc_html( $row['id'] ); ?></code>
+								<?php if ( '' !== $row['status']['message'] ) : ?>
+									<br><span style="color:#b32d2e;"><?php echo esc_html( $row['status']['message'] ); ?></span>
+								<?php endif; ?>
+							</td>
+							<td><?php echo wp_kses_post( syc_get_dashboard_badge( $row['status']['status'], $row['status']['status_type'] ) ); ?></td>
+							<td><?php echo wp_kses_post( syc_get_dashboard_badge( $row['status']['source'], $row['status']['source_type'] ) ); ?></td>
+							<td><?php echo esc_html( (string) $row['status']['items'] ); ?></td>
+							<td><?php echo esc_html( syc_format_dashboard_time( $row['status']['last_success_at'] ) ); ?></td>
+							<td><?php echo esc_html( syc_format_dashboard_time( $row['status']['last_attempt_at'] ) ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+			<?php if ( $playlist_pages > 1 ) : ?>
+				<div class="tablenav"><div class="tablenav-pages">
+					<?php
+					$pagination_base = str_replace(
+						'999999999',
+						'%#%',
+						add_query_arg(
+							array(
+								'page'              => 'syc-settings',
+								'syc_playlist_page' => 999999999,
+							),
+							admin_url( 'admin.php' )
+						)
+					);
+					echo wp_kses_post(
+						paginate_links(
+							array(
+								'base'      => $pagination_base,
+								'format'    => '',
+								'current'   => $playlist_page,
+								'total'     => $playlist_pages,
+								'prev_text' => __( 'Vorige', 'scientias-youtube-carrousel' ),
+								'next_text' => __( 'Volgende', 'scientias-youtube-carrousel' ),
+							)
+						)
+					);
+					?>
+				</div></div>
+			<?php endif; ?>
+		<?php endif; ?>
+	</div>
+	<?php
+}
+
+/**
  * Verwerk een handmatige feedverversing via Post/Redirect/Get.
  */
 function syc_handle_manual_refresh() {
@@ -1379,7 +2011,7 @@ function syc_handle_manual_refresh() {
 		);
 	}
 
-	set_transient( 'syc_manual_refresh_notice_' . get_current_user_id(), $notice, 2 * MINUTE_IN_SECONDS );
+	syc_store_admin_notice( $notice );
 	wp_safe_redirect( admin_url( 'admin.php?page=syc-settings' ) );
 	exit;
 }
@@ -1393,9 +2025,7 @@ function syc_render_settings_page() {
 		return;
 	}
 
-	$refresh_notice_key = 'syc_manual_refresh_notice_' . get_current_user_id();
-	$refresh_notice     = get_transient( $refresh_notice_key );
-	delete_transient( $refresh_notice_key );
+	$refresh_notice = syc_take_admin_notice();
 
 	$settings = syc_get_settings();
 	$status   = get_option( 'syc_api_feed_meta', array() );
@@ -1520,7 +2150,7 @@ function syc_render_settings_page() {
 			<p><?php esc_html_e( 'Configureer eerst je API sleutel en kanaal ID om de status van de YouTube feed te kunnen bekijken.', 'scientias-youtube-carrousel' ); ?></p>
 		<?php else : ?>
 			<?php if ( empty( $status ) ) : ?>
-				<p><?php esc_html_e( 'Er is nog geen aanvraag naar de YouTube API gedaan. Deze wordt binnen 5 minuten automatisch gedaan, of leeg de cache hierboven om het nu te forceren.', 'scientias-youtube-carrousel' ); ?></p>
+				<p><?php esc_html_e( 'Er is nog geen aanvraag naar de YouTube API gedaan. Deze wordt binnen 5 minuten automatisch gedaan; gebruik “Feeds direct verversen” om dit nu te forceren.', 'scientias-youtube-carrousel' ); ?></p>
 			<?php else : ?>
 				<?php
 				$timestamp = isset( $status['updated_at'] ) ? (int) $status['updated_at'] : 0;
@@ -2038,24 +2668,18 @@ function syc_get_api_shorts_items() {
  */
 function syc_fetch_and_cache_api_shorts_items() {
 	$settings = syc_get_settings();
+	$keys     = syc_get_main_feed_storage_keys( $settings );
 
 	if ( empty( $settings['api_key'] ) || empty( $settings['channel_id'] ) ) {
-		return new WP_Error( 'syc_missing_settings', __( 'YouTube API sleutel of kanaal ID ontbreekt.', 'scientias-youtube-carrousel' ) );
+		$error = new WP_Error( 'syc_missing_settings', __( 'YouTube API sleutel of kanaal ID ontbreekt.', 'scientias-youtube-carrousel' ) );
+		syc_update_main_feed_meta( 'error', null, $error, $keys['cache'] );
+		return $error;
 	}
-	$keys = syc_get_main_feed_storage_keys( $settings );
 
 	$playlist_id = syc_get_shorts_playlist_id( $settings['channel_id'] );
 	if ( ! $playlist_id ) {
 		$error = new WP_Error( 'syc_invalid_channel_id', __( 'Ongeldig kanaal ID voor Shorts playlist.', 'scientias-youtube-carrousel' ) );
-		update_option(
-			'syc_api_feed_meta',
-			array(
-				'status'     => 'error',
-				'message'    => $error->get_error_message(),
-				'code'       => $error->get_error_code(),
-				'updated_at' => time(),
-			)
-		);
+		syc_update_main_feed_meta( 'error', null, $error, $keys['cache'] );
 		return $error;
 	}
 
@@ -2079,15 +2703,7 @@ function syc_fetch_and_cache_api_shorts_items() {
 	);
 
 	if ( is_wp_error( $response ) ) {
-		update_option(
-			'syc_api_feed_meta',
-			array(
-				'status'     => 'error',
-				'message'    => $response->get_error_message(),
-				'code'       => $response->get_error_code(),
-				'updated_at' => time(),
-			)
-		);
+		syc_update_main_feed_meta( 'error', null, $response, $keys['cache'] );
 		return $response;
 	}
 
@@ -2095,15 +2711,7 @@ function syc_fetch_and_cache_api_shorts_items() {
 	if ( 200 !== $code ) {
 		/* translators: %d: HTTP status code. */
 		$error = new WP_Error( 'syc_api_http_error', sprintf( __( 'YouTube API fout: HTTP %d', 'scientias-youtube-carrousel' ), (int) $code ) );
-		update_option(
-			'syc_api_feed_meta',
-			array(
-				'status'     => 'error',
-				'message'    => $error->get_error_message(),
-				'code'       => $error->get_error_code(),
-				'updated_at' => time(),
-			)
-		);
+		syc_update_main_feed_meta( 'error', null, $error, $keys['cache'] );
 		return $error;
 	}
 
@@ -2112,15 +2720,7 @@ function syc_fetch_and_cache_api_shorts_items() {
 
 	if ( ! is_array( $data ) || ! isset( $data['items'] ) || ! is_array( $data['items'] ) ) {
 		$error = new WP_Error( 'syc_api_empty', __( 'Geen items gevonden in de YouTube Shorts feed.', 'scientias-youtube-carrousel' ) );
-		update_option(
-			'syc_api_feed_meta',
-			array(
-				'status'     => 'error',
-				'message'    => $error->get_error_message(),
-				'code'       => $error->get_error_code(),
-				'updated_at' => time(),
-			)
-		);
+		syc_update_main_feed_meta( 'error', null, $error, $keys['cache'] );
 		return $error;
 	}
 
@@ -2156,18 +2756,16 @@ function syc_fetch_and_cache_api_shorts_items() {
 		);
 	}
 
+	$current_keys = syc_get_main_feed_storage_keys();
+	if ( $keys['cache'] !== $current_keys['cache'] ) {
+		return new WP_Error( 'syc_feed_source_changed', __( 'De feedinstellingen zijn tijdens het ophalen gewijzigd; het verouderde resultaat is genegeerd.', 'scientias-youtube-carrousel' ) );
+	}
+
 	// TTL langer dan het cron-interval, zie SYC_API_FEED_CACHE_TTL.
 	set_transient( $keys['cache'], $items, SYC_API_FEED_CACHE_TTL );
 	update_option( $keys['stale'], $items, false );
 
-	update_option(
-		'syc_api_feed_meta',
-		array(
-			'status'     => 'ok',
-			'items'      => count( $items ),
-			'updated_at' => time(),
-		)
-	);
+	syc_update_main_feed_meta( 'ok', count( $items ), null, $keys['cache'] );
 
 	syc_sync_feed_drafts( $items );
 
@@ -2460,7 +3058,9 @@ function syc_fetch_and_cache_api_playlist_items( $playlist_id ) {
 	}
 
 	if ( empty( $settings['api_key'] ) ) {
-		return new WP_Error( 'syc_missing_api_key', __( 'YouTube API sleutel ontbreekt.', 'scientias-youtube-carrousel' ) );
+		$error = new WP_Error( 'syc_missing_api_key', __( 'YouTube API sleutel ontbreekt.', 'scientias-youtube-carrousel' ) );
+		syc_update_playlist_feed_meta( $playlist_id, 'error', null, $error );
+		return $error;
 	}
 
 	$cache_key   = SYC_PLAYLIST_CACHE_PREFIX . md5( $playlist_id );
@@ -2483,20 +3083,25 @@ function syc_fetch_and_cache_api_playlist_items( $playlist_id ) {
 	);
 
 	if ( is_wp_error( $response ) ) {
+		syc_update_playlist_feed_meta( $playlist_id, 'error', null, $response );
 		return $response;
 	}
 
 	$code = wp_remote_retrieve_response_code( $response );
 	if ( 200 !== $code ) {
 		/* translators: %d: HTTP status code. */
-		return new WP_Error( 'syc_playlist_api_http_error', sprintf( __( 'YouTube API fout: HTTP %d', 'scientias-youtube-carrousel' ), (int) $code ) );
+		$error = new WP_Error( 'syc_playlist_api_http_error', sprintf( __( 'YouTube API fout: HTTP %d', 'scientias-youtube-carrousel' ), (int) $code ) );
+		syc_update_playlist_feed_meta( $playlist_id, 'error', null, $error );
+		return $error;
 	}
 
 	$body = wp_remote_retrieve_body( $response );
 	$data = json_decode( $body, true );
 
 	if ( ! is_array( $data ) || ! isset( $data['items'] ) || ! is_array( $data['items'] ) ) {
-		return new WP_Error( 'syc_playlist_api_empty', __( 'Geen items gevonden in de YouTube playlist.', 'scientias-youtube-carrousel' ) );
+		$error = new WP_Error( 'syc_playlist_api_empty', __( 'Geen items gevonden in de YouTube playlist.', 'scientias-youtube-carrousel' ) );
+		syc_update_playlist_feed_meta( $playlist_id, 'error', null, $error );
+		return $error;
 	}
 
 	$items = array();
@@ -2533,6 +3138,7 @@ function syc_fetch_and_cache_api_playlist_items( $playlist_id ) {
 
 	set_transient( $cache_key, $items, SYC_API_FEED_CACHE_TTL );
 	update_option( SYC_PLAYLIST_STALE_PREFIX . md5( $playlist_id ), $items, false );
+	syc_update_playlist_feed_meta( $playlist_id, 'ok', count( $items ) );
 	syc_track_playlist_cache( $playlist_id );
 
 	return $items;
@@ -2709,46 +3315,7 @@ function syc_render_carrousel_shortcode( $atts ) {
 			);
 		}
 	} else {
-		// Vallen terug op handmatig beheerde items.
-		$query_args = array(
-			'post_type'      => 'syc_video',
-			'post_status'    => 'publish',
-			'posts_per_page' => intval( $atts['limit'] ),
-			'orderby'        => 'date',
-			'order'          => 'DESC', // Nieuw naar oud.
-		);
-
-		$videos = new WP_Query( $query_args );
-
-		if ( ! $videos->have_posts() ) {
-			return '';
-		}
-
-		while ( $videos->have_posts() ) {
-			$videos->the_post();
-
-			$video_url = get_post_meta( get_the_ID(), '_syc_video_url', true );
-			if ( empty( $video_url ) ) {
-				continue;
-			}
-
-			$link_url = get_post_meta( get_the_ID(), '_syc_link_url', true );
-
-			$thumb_url = get_the_post_thumbnail_url( get_the_ID(), 'large' );
-			if ( ! $thumb_url ) {
-				$video_id  = syc_extract_youtube_video_id( $video_url );
-				$thumb_url = syc_get_youtube_thumbnail_url( $video_id );
-			}
-
-			$items[] = array(
-				'title'     => get_the_title(),
-				'video_url' => $video_url,
-				'thumb_url' => $thumb_url,
-				'link_url'  => $link_url,
-			);
-		}
-
-		wp_reset_postdata();
+		$items = syc_get_manual_fallback_items( intval( $atts['limit'] ) );
 	}
 
 	$title = '' !== $atts['title'] ? $atts['title'] : __( 'Video', 'scientias-youtube-carrousel' );

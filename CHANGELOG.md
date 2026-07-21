@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1 - 2026-07-21
+
+- Added an editorial dashboard for the main feed and every configured playlist carousel.
+- Shows the active source, visible item count, last refresh attempt, last successful refresh, and next cron check.
+- Warns when API settings are missing, WP-Cron is unavailable, or visitors are seeing fallback content.
+- Added a safe YouTube connection test that does not change caches or create draft posts.
+- Preserves the previous successful status when a later API refresh fails.
+- Tracks and cleans up per-playlist refresh metadata.
+
 ## 1.1.4.1 - 2026-07-21
 
 - Hardened feed, settings, and auto-draft locks with atomic owner tokens and owner-aware cleanup.

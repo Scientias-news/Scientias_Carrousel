@@ -44,6 +44,7 @@ if ( is_array( $registry ) ) {
 		$hash = md5( $playlist_id );
 		delete_transient( 'syc_playlist_cache_' . $hash );
 		delete_option( 'syc_playlist_stale_' . $hash );
+		delete_option( 'syc_playlist_feed_meta_' . $hash );
 	}
 }
 
@@ -53,6 +54,7 @@ if ( ! empty( $settings['custom_carrousels'] ) && is_array( $settings['custom_ca
 			$hash = md5( $carrousel['playlist_id'] );
 			delete_transient( 'syc_playlist_cache_' . $hash );
 			delete_option( 'syc_playlist_stale_' . $hash );
+			delete_option( 'syc_playlist_feed_meta_' . $hash );
 		}
 	}
 }
@@ -63,13 +65,18 @@ if ( ! empty( $settings['custom_carrousels'] ) && is_array( $settings['custom_ca
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $orphaned_cache_options = $wpdb->get_col(
 	$wpdb->prepare(
-		"SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s",
+		"SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s",
 		$wpdb->esc_like( '_transient_syc_playlist_cache_' ) . '%',
 		$wpdb->esc_like( '_transient_timeout_syc_playlist_cache_' ) . '%',
 		$wpdb->esc_like( 'syc_playlist_stale_' ) . '%',
+		$wpdb->esc_like( 'syc_playlist_feed_meta_' ) . '%',
 		$wpdb->esc_like( '_transient_syc_api_feed_cache_' ) . '%',
 		$wpdb->esc_like( '_transient_timeout_syc_api_feed_cache_' ) . '%',
-		$wpdb->esc_like( 'syc_api_feed_stale_' ) . '%'
+		$wpdb->esc_like( 'syc_api_feed_stale_' ) . '%',
+		$wpdb->esc_like( '_transient_syc_admin_notice_' ) . '%',
+		$wpdb->esc_like( '_transient_timeout_syc_admin_notice_' ) . '%',
+		$wpdb->esc_like( '_transient_syc_manual_refresh_notice_' ) . '%',
+		$wpdb->esc_like( '_transient_timeout_syc_manual_refresh_notice_' ) . '%'
 	)
 );
 

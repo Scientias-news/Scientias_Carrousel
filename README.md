@@ -20,6 +20,19 @@ WordPress-plugin voor responsieve YouTube-carrousels met automatische Shorts-fee
 
 De API-key wordt na opslag niet opnieuw leesbaar in het formulier getoond. Laat het veld leeg om een bestaande key te behouden.
 
+## Dashboard
+
+Het menu **YouTube carrousel > Dashboard** geeft de redactie direct inzicht in wat bezoekers zien.
+
+- Toont de gezondheid van de hoofdfeed en iedere ingestelde playlistcarrousel.
+- Toont de actieve bron: actuele API-cache, laatst bekende feed of handmatige fallback.
+- Toont het aantal zichtbare items.
+- Toont de laatste verversingspoging en de laatste succesvolle verversing afzonderlijk.
+- Toont wanneer WP-Cron de feeds opnieuw controleert.
+- Waarschuwt wanneer API-instellingen ontbreken, WP-Cron niet beschikbaar is of fallbackcontent zichtbaar is.
+- Bevat een knop om de YouTube-verbinding te testen zonder caches of conceptberichten te wijzigen.
+- Bevat een knop om de hoofdfeed en een begrensde playlistbatch direct te verversen.
+
 ## Werking en bronprioriteit
 
 De standaardshortcode gebruikt de volgende volgorde:
@@ -144,6 +157,7 @@ De standaardauteur wordt in de plugin bepaald met `SYC_DEFAULT_DRAFT_AUTHOR_NAME
 
 ## Beheeronderdelen
 
+- **Dashboard:** actieve videobronnen, feedgezondheid, itemaantallen, cronplanning en directe beheeracties.
 - **Feed instellingen:** API-key, kanaal-ID, maximaal aantal items, automatische concepten, handmatige refresh en feedstatus.
 - **Link overrides:** nieuwe koppelingen toevoegen, bestaande koppelingen pagineren en bewerken, CSV importeren en huidige feed-ID's bekijken.
 - **Extra carrousels:** playlistcarrousels en handmatige themacarrousels maken of wijzigen.
