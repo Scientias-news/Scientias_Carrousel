@@ -1,0 +1,76 @@
+.syc-carrousel-card {
+	margin: 1rem 0;
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+.syc-carrousel-card > summary {
+	display: flex;
+	align-items: center;
+	gap: 1rem;
+	padding: 1rem;
+	cursor: pointer;
+	font-weight: 600;
+}
+
+.syc-carrousel-card > summary:hover,
+.syc-carrousel-card > summary:focus {
+	background: #f6f7f7;
+}
+
+.syc-carrousel-card__name {
+	min-width: 12rem;
+	font-size: 1.05rem;
+}
+
+.syc-carrousel-card__meta {
+	color: #50575e;
+	font-weight: 400;
+}
+
+.syc-carrousel-card__body {
+	padding: 0 1rem 1.25rem;
+	border-top: 1px solid #dcdcde;
+}
+
+.syc-drag-handle {
+	cursor: grab;
+	color: #50575e;
+}
+
+.syc-drag-handle:active {
+	cursor: grabbing;
+}
+
+.syc-sortable-items .ui-sortable-helper,
+.syc-sortable-carrousels .ui-sortable-helper {
+	background: #fff;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.syc-sortable-carrousels {
+	max-width: 700px;
+	margin-bottom: 1rem;
+}
+
+.syc-sortable-carrousels li {
+	display: flex;
+	align-items: center;
+	gap: 0.65rem;
+	padding: 0.65rem;
+	background: #fff;
+	border: 1px solid #c3c4c7;
+}
+
+.syc-sortable-carrousels li strong {
+	flex: 1;
+}
+
+@media (max-width: 782px) {
+	.syc-carrousel-card > summary {
+		align-items: flex-start;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+}

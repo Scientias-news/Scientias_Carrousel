@@ -20,6 +20,20 @@ WordPress-plugin voor responsieve YouTube-carrousels met automatische Shorts-fee
 
 De API-key wordt na opslag niet opnieuw leesbaar in het formulier getoond. Laat het veld leeg om een bestaande key te behouden.
 
+## Onboarding
+
+Na een nieuwe activatie opent voor administrators automatisch eenmalig **YouTube carrousel > Aan de slag** wanneer de API-configuratie nog ontbreekt.
+
+1. De plugin controleert of de activatie en WP-Cronplanning zijn voltooid.
+2. De beheerder vult de YouTube Data API-key, het kanaal-ID en het maximale aantal Shorts in.
+3. Na opslaan haalt de plugin direct de eerste feed op en toont hij het resultaat.
+
+Zolang de API-key of het kanaal-ID ontbreekt, blijft in WordPress een beheerwaarschuwing met een link naar de onboarding zichtbaar. Bestaande installaties met geldige instellingen worden bij een update niet omgeleid.
+
+### Plugin bijwerken
+
+Verwijder of deactiveer de bestaande plugin niet voor een update. Upload de nieuwe zip via **Plugins > Nieuwe plugin > Plugin uploaden** en kies **Huidige vervangen door geüploade versie**. Verwijderen voert `uninstall.php` uit en wist de instellingen, API-key, carrousels en link overrides.
+
 ## Dashboard
 
 Het menu **YouTube carrousel > Dashboard** geeft de redactie direct inzicht in wat bezoekers zien.
@@ -32,6 +46,23 @@ Het menu **YouTube carrousel > Dashboard** geeft de redactie direct inzicht in w
 - Waarschuwt wanneer API-instellingen ontbreken, WP-Cron niet beschikbaar is of fallbackcontent zichtbaar is.
 - Bevat een knop om de YouTube-verbinding te testen zonder caches of conceptberichten te wijzigen.
 - Bevat een knop om de hoofdfeed en een begrensde playlistbatch direct te verversen.
+
+## Redactioneel video-overzicht
+
+Het menu **YouTube carrousel > Video-overzicht** bundelt alle bekende video's uit de hoofdfeed en ingestelde playlistcarrousels.
+
+- Toont per video de redactionele status: nieuw, concept aangemaakt, artikel gekoppeld, gepubliceerd of genegeerd.
+- Toont afzonderlijk of de video nog in een actuele actieve feedset staat.
+- **API-video verdwenen** betekent dat de video niet meer in de laatst succesvol opgehaalde actieve feedset staat; dit betekent niet noodzakelijk dat de video van YouTube is verwijderd.
+- **Concept maken** maakt direct een gekoppeld WordPress-concept.
+- **Artikel koppelen** zoekt een bestaand bewerkbaar WordPress-artikel op titel. Publicatie vult automatisch de link override.
+- **Negeren** voorkomt dat voor een nog niet verwerkte video later automatisch een concept wordt gemaakt.
+
+Bij een upgrade wordt het overzicht eenmalig gevuld vanuit de bestaande geldige feedcaches. Alleen succesvolle API-verversingen wijzigen de bronstatus; een API-fout markeert daarom geen video's als verdwenen.
+
+## Automatische berichten
+
+Onder **Feed instellingen** kan een administrator automatische berichten voor nieuwe Shorts in- of uitschakelen. De standaardauteur, categorieën, het berichtformaat, de initiële status en de tekst na de YouTube-URL zijn afzonderlijk instelbaar. Handmatig via het video-overzicht aangemaakte concepten blijven altijd gewone concepten.
 
 ## Werking en bronprioriteit
 
@@ -46,6 +77,16 @@ Een benoemde extra carrousel gebruikt deze volgorde:
 2. De handmatige videorijen van die carrousel wanneer de playlist niet beschikbaar of leeg is.
 
 Bezoekers laden nooit rechtstreeks gegevens uit de YouTube API. De plugin haalt feeds op de achtergrond op en toont de laatst succesvol ontvangen gegevens als een nieuwe aanvraag mislukt.
+
+Elke extra carrousel wordt afzonderlijk opgeslagen. Daardoor blijven andere carrousels onaangeraakt en overschrijft een verouderd browsertabblad geen nieuwere wijziging. Verwijderen gebeurt uitsluitend via de expliciete verwijderknop.
+
+Bestaande carrousels staan in inklapbare kaarten. Ingeklapt blijven naam, shortcode, bron en aantal handmatige video's zichtbaar; open de kaart om de inhoud te bewerken.
+
+De volgorde van extra carrousels en van handmatige video's binnen een carrousel kan via slepen worden aangepast. Voor de carrouselvolgorde zijn ook toetsenbordvriendelijke omhoog/omlaag-knoppen beschikbaar; wijzigingen worden pas na expliciet opslaan actief.
+
+Iedere opgeslagen carrousel kan worden gedupliceerd, de shortcode kan direct worden gekopieerd en een voorbeeld van de laatst opgeslagen versie kan op de beheerpagina worden bekeken. Het voorbeeld gebruikt uitsluitend bestaande caches en doet geen extra YouTube API-aanvraag.
+
+Playlistcarrousels tonen in hun kaart de gezondheid, actieve bron, het aantal zichtbare items, laatste poging, laatste succesvolle refresh en de meest recente foutmelding. Deze status hoort altijd bij de opgeslagen playlist.
 
 ## Shortcodes
 
@@ -104,7 +145,7 @@ Beschikbare attributen:
 - Toont huidige feedvideo's met hun video-ID en koppelingsstatus.
 - Handmatig ingestelde overrides hebben voorrang op automatisch aangemaakte koppelingen.
 
-Link overrides worden gebruikt voor video's uit de automatische hoofdfeed. Handmatige video's en handmatige rijen in extra carrousels hebben ieder een eigen optioneel pagina-URL-veld.
+Link overrides worden gebruikt voor API-video's uit de automatische hoofdfeed en playlistcarrousels. Handmatige video's en handmatige rijen in extra carrousels hebben ieder een eigen optioneel pagina-URL-veld.
 
 ## CSV-import
 
@@ -158,10 +199,20 @@ De standaardauteur wordt in de plugin bepaald met `SYC_DEFAULT_DRAFT_AUTHOR_NAME
 ## Beheeronderdelen
 
 - **Dashboard:** actieve videobronnen, feedgezondheid, itemaantallen, cronplanning en directe beheeracties.
+- **Aan de slag:** eerste configuratie, herstel na ontbrekende instellingen en directe eerste feedrefresh.
+- **Video-overzicht:** alle feedvideo's, redactionele statussen en acties voor concepten, artikelkoppelingen en negeren.
 - **Feed instellingen:** API-key, kanaal-ID, maximaal aantal items, automatische concepten, handmatige refresh en feedstatus.
 - **Link overrides:** nieuwe koppelingen toevoegen, bestaande koppelingen pagineren en bewerken, CSV importeren en huidige feed-ID's bekijken.
 - **Extra carrousels:** playlistcarrousels en handmatige themacarrousels maken of wijzigen.
 - **Losse video-items:** gepubliceerde WordPress-video's beheren die als fallback voor de hoofdfeed dienen.
+
+Administrators en editors kunnen de redactionele onderdelen beheren. Alleen administrators hebben toegang tot API-instellingen, onboarding, verbindingstests, handmatige feedrefreshes en technische hulpmiddelen.
+
+Onder **Gereedschap** kunnen administrators de portable configuratie als JSON exporteren of importeren. De API-key, caches, locks, cronstatus, conceptmapping en videohistorie staan nooit in het exportbestand. Een import behoudt de bestaande API-key en wordt volledig geweigerd zodra één veld of rij ongeldig is.
+
+Op dezelfde pagina kan een read-only diagnostisch JSON-rapport worden gedownload. Het bevat versies, configuratievlaggen en aantallen, cache- en feedstatus, cronplanning en lockvervalmomenten, maar nooit API-keys, ruwe API-antwoorden, artikelgegevens, gebruikersgegevens, nonces of locktokens.
+
+YouTube-fouten worden gericht uitgelegd, onder andere voor een ongeldige of geblokkeerde API-key, opgebruikt quotum, rate limiting, een ongeldig kanaal, een niet-beschikbare Shorts-playlist en een privé/verwijderde playlist. Crongezondheid is gebaseerd op werkelijk gemeten uitvoering en herkent ook een goed werkende externe servercron.
 
 ## Levenscyclus
 

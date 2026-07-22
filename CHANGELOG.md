@@ -1,5 +1,103 @@
 # Changelog
 
+## 1.5.14 - 2026-07-21
+
+- Added centralized, safe YouTube error translation for invalid/restricted keys, exhausted quota, rate limits, invalid channels, unavailable Shorts playlists, private/deleted playlists, transport failures, malformed responses, and temporary outages.
+- Main-feed, playlist, onboarding, connection-test, dashboard, refresh, and diagnostic paths now use the same targeted error codes and messages.
+- Added a channel probe to distinguish an invalid channel from an existing channel without a public Shorts playlist.
+- Cron health is now based on observed hook execution and distinguishes healthy WP-Cron, healthy external server cron, first-run grace, missing events, scheduling failures, and late execution.
+- Manual refresh reports include the first targeted failure while preserving last-known-good feed data.
+- Final audit hardening rejects stale general/override forms, strictly rejects imports that would be normalized, verifies settings persistence, and keeps diagnostic download requests free of opportunistic repair writes.
+
+## 1.5.13 - 2026-07-21
+
+- Added an administrator-only, secret-free diagnostic JSON report under “Gereedschap”.
+- Reports plugin, WordPress and PHP versions, configuration flags and counts, cache state, source refresh times, cron scheduling, and lock expiry.
+- Playlist IDs are represented only by short one-way hashes.
+- Report generation is read-only and never tests connections, refreshes feeds, schedules cron, clears data, or exposes lock tokens and API responses.
+
+## 1.5.12 - 2026-07-21
+
+- Added administrator-only JSON export and import under “Gereedschap”.
+- Exports portable settings, carousels, and link overrides without the API key, caches, locks, editorial history, or cron state.
+- Imports are fully validated before one atomic settings update; one invalid field leaves all existing data unchanged.
+- The stored API key is always preserved and obsolete source caches are cleaned after a successful import.
+
+## 1.5.11 - 2026-07-21
+
+- Added a dedicated editorial capability for administrators and editors.
+- Editors can manage the dashboard, video overview, link overrides, extra carousels, and loose fallback videos.
+- API settings, onboarding, connection tests, and feed refresh actions remain administrator-only.
+- Editorial settings submissions can modify only their authorized subsection of the shared option.
+- Capability installation and cron lifecycle now cover ZIP upgrades, network activation/deactivation, new multisite sites, and uninstall.
+
+## 1.5.10 - 2026-07-21
+
+- Added playlist health and active-source badges to every saved carousel card.
+- Cards show visible item count, last successful refresh, last attempt, and the specific stored playlist error.
+- Manual-only carousels are clearly identified without reading empty playlist metadata.
+- Status always describes the saved playlist, not unsaved edits in the open form.
+
+## 1.5.9 - 2026-07-21
+
+- Added safe carousel duplication with automatic unique copy slugs.
+- Added one-click shortcode copying with a fallback for browsers without the Clipboard API.
+- Added an admin preview that renders the last saved carousel through the production shortcode and existing cache.
+- Duplicates are inserted directly after their source and never modify the original.
+
+## 1.5.8 - 2026-07-21
+
+- Added drag-and-drop ordering for manual videos inside each carousel.
+- Added a separate safe order form for extra carousels, including keyboard-accessible up/down controls.
+- Reordering preserves concurrently added carousels and never removes unknown entries.
+- Item field names are reindexed after dragging so the saved frontend order matches the editor.
+
+## 1.5.7 - 2026-07-21
+
+- Existing extra carousels are now displayed as accessible collapsible cards.
+- Collapsed summaries show the name, shortcode, source type, and manual video count.
+- Added responsive admin styling without making saving dependent on JavaScript.
+
+## 1.5.6 - 2026-07-21
+
+- Each extra carousel now has its own save form, preventing unrelated carousels from being submitted together.
+- Added stale-edit protection so an older browser tab cannot silently overwrite a newer carousel change.
+- Added explicit deletion with confirmation, slug-conflict detection, and safe playlist-cache cleanup.
+- Truncated forms are rejected without changing the stored carousel.
+
+## 1.5.5 - 2026-07-21
+
+- Added configurable defaults for automatically created posts: author, categories, post format, text, and initial status.
+- Automatic post creation can remain disabled so new feed videos stay available in the editorial overview.
+- Existing installations retain their previous author, Video/Shorts categories, video format, draft status, and explanatory text by default.
+- Manual “Concept maken” actions always remain drafts and are not affected by automatic publishing settings.
+
+## 1.5.4 - 2026-07-21
+
+- Replaced manual article-ID entry in the video overview with a WordPress article autocomplete.
+- Search results include only editable posts and show title, ID, and publication status.
+- Added keyboard-accessible feedback and a numeric no-JavaScript fallback.
+- Server-side linking validation remains authoritative for tampered or stale selections.
+
+## 1.5.3 - 2026-07-21
+
+- Added one editorial overview for all known main-feed and playlist videos.
+- Shows whether a video is new, has a draft, is linked, published, ignored, current, or absent from the latest active feed snapshot.
+- Added safe actions to create a draft, link an existing WordPress article by ID, or ignore an unprocessed video.
+- Tracks successful source snapshots so API errors never mark videos as disappeared.
+- Existing feed caches are indexed automatically after upgrading from 1.5.2.
+- Link overrides now also apply to API videos shown in playlist carousels.
+
+## 1.5.2 - 2026-07-21
+
+- Added a guided three-step onboarding page for activation and configuration recovery.
+- New installations without API settings redirect administrators to the onboarding once after activation.
+- Added a persistent admin warning while the API key or channel ID is missing.
+- Onboarding validates and saves settings, then immediately performs the first feed refresh.
+- Existing configured installations are never interrupted or redirected during an update.
+- Network activation avoids forced redirects, and uninstall now cleans every site in a multisite network.
+- Added explicit update guidance: replace the installed plugin instead of deleting it.
+
 ## 1.5.1 - 2026-07-21
 
 - Added an editorial dashboard for the main feed and every configured playlist carousel.
