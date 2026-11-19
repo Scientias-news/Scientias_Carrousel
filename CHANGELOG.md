@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.15 - 2026-11-19
+
+- The video modal now moves keyboard focus to its close button on open, keeps Tab focus inside the dialog, and returns focus to the originating video on close.
+- The dialog is labelled by the video title and the player iframe has an accessible title.
+- Videos are now embedded via the privacy-enhanced youtube-nocookie.com domain.
+- The frontend script also initialises when it runs after DOMContentLoaded (e.g. delayed JavaScript from caching plugins) and never initialises a carousel twice.
+- Fixed a mobile swipe on the modal's edge zones being counted twice, which skipped a video.
+
 ## 1.5.14 - 2026-07-21
 
 - Added centralized, safe YouTube error translation for invalid/restricted keys, exhausted quota, rate limits, invalid channels, unavailable Shorts playlists, private/deleted playlists, transport failures, malformed responses, and temporary outages.

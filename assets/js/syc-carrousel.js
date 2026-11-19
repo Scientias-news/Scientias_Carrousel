@@ -10,7 +10,7 @@
 			var u = new URL(url);
 			var host = u.hostname.toLowerCase();
 
-			if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].indexOf(host) === -1) {
+			if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'youtube-nocookie.com', 'www.youtube-nocookie.com'].indexOf(host) === -1) {
 				return null;
 			}
 
@@ -24,9 +24,12 @@
 				return u.pathname.replace('/', '');
 			}
 
-			// /shorts/VIDEOID
+			// /shorts/VIDEOID of /embed/VIDEOID
 			var parts = u.pathname.split('/');
 			var shortsIndex = parts.indexOf('shorts');
+			if (shortsIndex === -1) {
+				shortsIndex = parts.indexOf('embed');
+			}
 			if (shortsIndex !== -1 && parts[shortsIndex + 1]) {
 				return parts[shortsIndex + 1];
 			}
@@ -60,7 +63,9 @@
 		iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen');
 		iframe.setAttribute('webkitallowfullscreen', 'webkitallowfullscreen');
 		iframe.setAttribute('mozallowfullscreen', 'mozallowfullscreen');
-		iframe.src = 'https://www.youtube.com/embed/' + id + '?autoplay=1&rel=0';
+		iframe.setAttribute('title', 'YouTube-videospeler');
+		// Privacyvriendelijk domein: YouTube plaatst pas cookies bij interactie met de speler.
+		iframe.src = 'https://www.youtube-nocookie.com/embed/' + id + '?autoplay=1&rel=0';
 		return iframe;
 	}
 
@@ -79,7 +84,8 @@
 		target.addEventListener(
 			'touchstart',
 			function (e) {
-				if (e.target && e.target.closest('.syc-modal-close, .syc-modal-nav, iframe')) {
+				// Randzones en knoppen hebben eigen handlers; anders telt één veeg dubbel.
+				if (e.target && e.target.closest('.syc-modal-close, .syc-modal-nav, .syc-modal-edge, .syc-modal-vert, iframe')) {
 					return;
 				}
 
@@ -129,7 +135,21 @@
 	var modalRoot;
 	var modalItems = [];
 	var modalIndex = -1;
+	var modalTrigger = null;
 	var ignoreClickUntil = 0;
+
+	function getFocusableModalElements() {
+		if (!modal) {
+			return [];
+		}
+
+		return Array.prototype.filter.call(
+			modal.querySelectorAll('button, iframe, [href], [tabindex]:not([tabindex="-1"])'),
+			function (el) {
+				return !el.disabled && el.getClientRects().length > 0;
+			}
+		);
+	}
 
 	function ensureModal() {
 		if (modal) {
@@ -142,7 +162,7 @@
 
 		modal.innerHTML =
 			'<div class="syc-modal-backdrop"></div>' +
-			'<div class="syc-modal-content" role="dialog" aria-modal="true">' +
+			'<div class="syc-modal-content" role="dialog" aria-modal="true" aria-labelledby="syc-modal-title" tabindex="-1">' +
 			'  <button type="button" class="syc-modal-close" aria-label="Sluit video">&times;</button>' +
 			'  <button type="button" class="syc-modal-nav syc-modal-prev" aria-label="Vorige video">&lsaquo;</button>' +
 			'  <button type="button" class="syc-modal-nav syc-modal-next" aria-label="Volgende video">&rsaquo;</button>' +
@@ -152,7 +172,7 @@
 			'  <button type="button" class="syc-modal-vert syc-modal-vert-next" aria-label="Volgende video"></button>' +
 			'  <div class="syc-modal-inner">' +
 			'    <div class="syc-modal-media"></div>' +
-			'    <div class="syc-modal-title"></div>' +
+			'    <div class="syc-modal-title" id="syc-modal-title"></div>' +
 			'  </div>' +
 			'</div>';
 
@@ -182,6 +202,12 @@
 			modalItems = [];
 			modalIndex = -1;
 			document.documentElement.classList.remove('syc-modal-open');
+
+			// Geef de focus terug aan de knop waarmee de video werd geopend.
+			if (modalTrigger && document.contains(modalTrigger) && typeof modalTrigger.focus === 'function') {
+				modalTrigger.focus();
+			}
+			modalTrigger = null;
 		}
 
 		closeBtn.addEventListener('click', closeModal);
@@ -212,7 +238,7 @@
 		// De iframe onderschept alle aanrakingen op de video zelf, dus we gebruiken
 		// de transparante padding-zones als swipe-target. touchend volgt altijd het
 		// element waar touchstart begon, dus ook als de vinger over de iframe beweegt.
-		(function addEdgeSwipe(btn) {
+		function addEdgeSwipe(btn) {
 			var sy = 0, sx = 0, tracking = false;
 
 			btn.addEventListener('touchstart', function (e) {
@@ -231,28 +257,10 @@
 				if (Math.abs(dy) < 35 || Math.abs(dy) < Math.abs(dx)) { return; }
 				showRelativeItem(dy < 0 ? 1 : -1);
 			}, { passive: true });
-		}(edgePrev));
+		}
 
-		(function addEdgeSwipe(btn) {
-			var sy = 0, sx = 0, tracking = false;
-
-			btn.addEventListener('touchstart', function (e) {
-				if (!e.touches || e.touches.length !== 1) { return; }
-				tracking = true;
-				sy = e.touches[0].clientY;
-				sx = e.touches[0].clientX;
-			}, { passive: true });
-
-			btn.addEventListener('touchend', function (e) {
-				if (!tracking) { return; }
-				tracking = false;
-				if (!e.changedTouches || !e.changedTouches.length) { return; }
-				var dx = e.changedTouches[0].clientX - sx;
-				var dy = e.changedTouches[0].clientY - sy;
-				if (Math.abs(dy) < 35 || Math.abs(dy) < Math.abs(dx)) { return; }
-				showRelativeItem(dy < 0 ? 1 : -1);
-			}, { passive: true });
-		}(edgeNext));
+		addEdgeSwipe(edgePrev);
+		addEdgeSwipe(edgeNext);
 		backdrop.addEventListener('click', closeModal);
 
 		document.addEventListener('keydown', function (e) {
@@ -261,6 +269,26 @@
 			}
 
 			if (!modal.classList.contains('is-open') || !modalItems.length) {
+				return;
+			}
+
+			// Houd de toetsenbordfocus binnen het geopende videovenster.
+			if (e.key === 'Tab') {
+				var focusable = getFocusableModalElements();
+				if (!focusable.length) {
+					e.preventDefault();
+					return;
+				}
+				var first = focusable[0];
+				var last = focusable[focusable.length - 1];
+				var active = document.activeElement;
+				if (e.shiftKey && (active === first || !modal.contains(active))) {
+					e.preventDefault();
+					last.focus();
+				} else if (!e.shiftKey && (active === last || !modal.contains(active))) {
+					e.preventDefault();
+					first.focus();
+				}
 				return;
 			}
 
@@ -315,9 +343,18 @@
 		modalMedia.appendChild(iframe);
 		modalTitle.textContent = title;
 
+		var wasOpen = modal.classList.contains('is-open');
 		modal.classList.add('is-open');
 		modal.setAttribute('aria-hidden', 'false');
 		document.documentElement.classList.add('syc-modal-open');
+
+		// Verplaats de focus bij het openen naar de sluitknop van het venster.
+		if (!wasOpen) {
+			var closeBtn = modal.querySelector('.syc-modal-close');
+			if (closeBtn) {
+				closeBtn.focus();
+			}
+		}
 	}
 
 	function showRelativeItem(delta) {
@@ -328,9 +365,10 @@
 	}
 
 	function initCarrousel(root) {
-		if (!root) {
+		if (!root || root.dataset.sycReady === '1') {
 			return;
 		}
+		root.dataset.sycReady = '1';
 
 		var items = root.querySelectorAll('.syc-video-button[data-video-url]');
 		if (!items.length) {
@@ -353,6 +391,7 @@
 					return;
 				}
 				modalRoot = root;
+				modalTrigger = item;
 				modalItems = itemsArray;
 				openModalItem(idx);
 			});
@@ -509,8 +548,16 @@
 		}
 	}
 
-	document.addEventListener('DOMContentLoaded', function () {
+	function initAll() {
 		var carrousels = document.querySelectorAll('.syc-carrousel');
 		Array.prototype.forEach.call(carrousels, initCarrousel);
-	});
+	}
+
+	// Ook starten wanneer het script pas na DOMContentLoaded draait,
+	// bijvoorbeeld door uitgestelde JavaScript van een cacheplugin.
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', initAll);
+	} else {
+		initAll();
+	}
 })();

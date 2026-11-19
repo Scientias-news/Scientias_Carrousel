@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scientias YouTube Carrousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.5.14
+ * Version:     1.5.15
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author:      Scientias
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.5.14' );
+define( 'SYC_VERSION', '1.5.15' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
 define( 'SYC_API_FEED_STALE_OPTION', 'syc_api_feed_stale' );
 define( 'SYC_PLAYLIST_CACHE_PREFIX', 'syc_playlist_cache_' );
