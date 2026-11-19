@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scientias YouTube Carrousel
  * Description: Voegt een shortcode toe voor een YouTube-video carrousel met titel, thumbnail en video-URL.
- * Version:     1.5.15
+ * Version:     1.6.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author:      Scientias
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SYC_VERSION', '1.5.15' );
+define( 'SYC_VERSION', '1.6.0' );
 define( 'SYC_API_FEED_CACHE_KEY', 'syc_api_feed_cache' );
 define( 'SYC_API_FEED_STALE_OPTION', 'syc_api_feed_stale' );
 define( 'SYC_PLAYLIST_CACHE_PREFIX', 'syc_playlist_cache_' );
@@ -52,6 +52,10 @@ define( 'SYC_EDITORIAL_CAPABILITY', 'syc_manage_youtube_content' );
 define( 'SYC_CAPABILITY_VERSION_OPTION', 'syc_capability_version' );
 define( 'SYC_CAPABILITY_VERSION', 1 );
 define( 'SYC_API_REQUEST_TIMEOUT', 4 );
+define( 'SYC_SHORTS_CLASSIFICATION_OPTION', 'syc_shorts_classification' );
+define( 'SYC_SHORTS_CLASSIFICATION_MAX', 500 );
+define( 'SYC_SHORTS_MAX_DURATION', 3 * MINUTE_IN_SECONDS );
+define( 'SYC_SHORTS_URL_CHECKS_PER_RUN', 5 );
 define( 'SYC_CSV_IMPORT_MAX_FILE_SIZE', 2 * MB_IN_BYTES );
 define( 'SYC_CSV_IMPORT_MAX_ROWS', 5000 );
 define( 'SYC_CONFIG_IMPORT_MAX_FILE_SIZE', 2 * MB_IN_BYTES );
@@ -5028,7 +5032,305 @@ function syc_get_api_shorts_items() {
 }
 
 /**
+ * Bepaal de uploads-playlist ID op basis van een kanaal ID.
+ *
+ * UCxxxx -> UUxxxx. Deze lijst bevat alle openbare uploads en wordt door
+ * YouTube direct bij publicatie bijgewerkt, in tegenstelling tot de
+ * automatische Shorts-playlist (UUSH), die soms uren achterloopt.
+ *
+ * @param string $channel_id Kanaal ID.
+ * @return string|false
+ */
+function syc_get_uploads_playlist_id( $channel_id ) {
+	$channel_id = trim( (string) $channel_id );
+
+	if ( 0 === strpos( $channel_id, 'UC' ) && strlen( $channel_id ) > 2 ) {
+		return 'UU' . substr( $channel_id, 2 );
+	}
+
+	return false;
+}
+
+/**
+ * Doe een GET-aanvraag naar de YouTube Data API en geef het gedecodeerde antwoord.
+ *
+ * @param string $endpoint Endpointnaam, bijvoorbeeld playlistItems of videos.
+ * @param array  $args     Queryparameters inclusief key.
+ * @param string $context  Foutcontext voor {@see syc_youtube_error_from_response()}.
+ * @return array|WP_Error
+ */
+function syc_youtube_api_get( $endpoint, $args, $context = 'main' ) {
+	$response = wp_remote_get(
+		add_query_arg( $args, 'https://www.googleapis.com/youtube/v3/' . $endpoint ),
+		array( 'timeout' => SYC_API_REQUEST_TIMEOUT )
+	);
+
+	if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+		return syc_youtube_error_from_response( $response, $context );
+	}
+
+	$data = json_decode( wp_remote_retrieve_body( $response ), true );
+	if ( ! is_array( $data ) || ! isset( $data['items'] ) || ! is_array( $data['items'] ) ) {
+		return syc_youtube_invalid_response_error();
+	}
+
+	return $data;
+}
+
+/**
+ * Zet playlistItems uit de YouTube API om naar genormaliseerde feeditems.
+ *
+ * Het extra veld published (Unix-tijd van publicatie van de video) wordt
+ * alleen intern gebruikt om bronnen samen te voegen en te sorteren.
+ *
+ * @param array $api_items Items uit een playlistItems-antwoord.
+ * @return array
+ */
+function syc_parse_youtube_playlist_items( $api_items ) {
+	$items = array();
+
+	foreach ( $api_items as $item ) {
+		if ( empty( $item['snippet']['resourceId']['videoId'] ) ) {
+			continue;
+		}
+
+		$video_id = syc_sanitize_youtube_video_id( $item['snippet']['resourceId']['videoId'] );
+		if ( '' === $video_id || isset( $items[ $video_id ] ) ) {
+			continue;
+		}
+
+		$title = isset( $item['snippet']['title'] ) ? sanitize_text_field( wp_strip_all_tags( $item['snippet']['title'] ) ) : '';
+		$thumb = '';
+
+		if ( ! empty( $item['snippet']['thumbnails']['maxres']['url'] ) ) {
+			$thumb = $item['snippet']['thumbnails']['maxres']['url'];
+		} elseif ( ! empty( $item['snippet']['thumbnails']['high']['url'] ) ) {
+			$thumb = $item['snippet']['thumbnails']['high']['url'];
+		} elseif ( ! empty( $item['snippet']['thumbnails']['medium']['url'] ) ) {
+			$thumb = $item['snippet']['thumbnails']['medium']['url'];
+		}
+
+		$thumb = '' !== $thumb ? esc_url_raw( $thumb ) : syc_get_youtube_thumbnail_url( $video_id );
+
+		$published = 0;
+		if ( ! empty( $item['contentDetails']['videoPublishedAt'] ) ) {
+			$published = (int) strtotime( (string) $item['contentDetails']['videoPublishedAt'] );
+		} elseif ( ! empty( $item['snippet']['publishedAt'] ) ) {
+			$published = (int) strtotime( (string) $item['snippet']['publishedAt'] );
+		}
+
+		$items[ $video_id ] = array(
+			'video_id'  => $video_id,
+			'title'     => $title,
+			'thumb'     => $thumb,
+			'published' => max( 0, $published ),
+		);
+	}
+
+	return array_values( $items );
+}
+
+/**
+ * Zet een ISO 8601-duur (bijvoorbeeld PT1M5S) om naar seconden.
+ *
+ * @param string $duration ISO 8601-duur.
+ * @return int Seconden, of -1 als de duur onleesbaar is.
+ */
+function syc_parse_iso8601_duration( $duration ) {
+	if ( ! is_string( $duration ) || ! preg_match( '/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/', $duration, $m ) ) {
+		return -1;
+	}
+
+	$days    = isset( $m[1] ) ? (int) $m[1] : 0;
+	$hours   = isset( $m[2] ) ? (int) $m[2] : 0;
+	$minutes = isset( $m[3] ) ? (int) $m[3] : 0;
+	$seconds = isset( $m[4] ) ? (int) $m[4] : 0;
+
+	return ( ( ( $days * 24 + $hours ) * 60 ) + $minutes ) * 60 + $seconds;
+}
+
+/**
+ * Lees de opgeslagen Shorts-classificaties: video-ID => 1 (Short) of 0 (geen Short).
+ *
+ * @return array
+ */
+function syc_get_shorts_classification() {
+	$map = get_option( SYC_SHORTS_CLASSIFICATION_OPTION, array() );
+	return is_array( $map ) ? $map : array();
+}
+
+/**
+ * Sla Shorts-classificaties begrensd op; de oudste regels vervallen eerst.
+ *
+ * @param array $map Video-ID => 1 of 0.
+ */
+function syc_save_shorts_classification( $map ) {
+	$clean = array();
+	foreach ( $map as $video_id => $is_short ) {
+		$video_id = syc_sanitize_youtube_video_id( (string) $video_id );
+		if ( '' !== $video_id ) {
+			$clean[ $video_id ] = $is_short ? 1 : 0;
+		}
+	}
+
+	if ( count( $clean ) > SYC_SHORTS_CLASSIFICATION_MAX ) {
+		$clean = array_slice( $clean, -SYC_SHORTS_CLASSIFICATION_MAX, null, true );
+	}
+
+	update_option( SYC_SHORTS_CLASSIFICATION_OPTION, $clean, false );
+}
+
+/**
+ * Controleer bij YouTube of een video als Short wordt behandeld.
+ *
+ * De URL youtube.com/shorts/ID geeft voor een Short status 200 en stuurt een gewone
+ * video door naar /watch. Het SOCS-cookie voorkomt de Europese cookiemelding;
+ * elke andere uitkomst (time-out, toestemmingspagina, foutstatus) is onbeslist.
+ * Kost geen API-quotum.
+ *
+ * @param string $video_id YouTube video-ID.
+ * @return bool|null true = Short, false = geen Short, null = onbeslist.
+ */
+function syc_check_youtube_short_url( $video_id ) {
+	$video_id = syc_sanitize_youtube_video_id( $video_id );
+	if ( '' === $video_id ) {
+		return null;
+	}
+
+	$response = wp_remote_get(
+		'https://www.youtube.com/shorts/' . rawurlencode( $video_id ),
+		array(
+			'timeout'             => SYC_API_REQUEST_TIMEOUT,
+			'redirection'         => 0,
+			'limit_response_size' => 2048,
+			'user-agent'          => 'Mozilla/5.0 (compatible; ScientiasYouTubeCarrousel/' . SYC_VERSION . ')',
+			'cookies'             => array( 'SOCS' => 'CAI' ),
+		)
+	);
+
+	if ( is_wp_error( $response ) ) {
+		return null;
+	}
+
+	$code = (int) wp_remote_retrieve_response_code( $response );
+	if ( 200 === $code ) {
+		return true;
+	}
+
+	if ( $code >= 300 && $code < 400 ) {
+		$location = (string) wp_remote_retrieve_header( $response, 'location' );
+		$host     = strtolower( (string) wp_parse_url( $location, PHP_URL_HOST ) );
+		$path     = (string) wp_parse_url( $location, PHP_URL_PATH );
+		if ( in_array( $host, array( '', 'youtube.com', 'www.youtube.com', 'm.youtube.com' ), true ) && '/watch' === $path ) {
+			return false;
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Zoek in recente uploads naar Shorts die nog niet in de Shorts-playlist staan.
+ *
+ * Uploads langer dan SYC_SHORTS_MAX_DURATION vallen af op basis van de duur
+ * (één videos.list-aanvraag). Kortere uploads worden met een quotumvrije
+ * URL-controle bevestigd. Uitkomsten worden opgeslagen, zodat iedere video
+ * normaal slechts eenmaal wordt gecontroleerd.
+ *
+ * @param array  $uploads      Genormaliseerde items uit de uploads-playlist.
+ * @param array  $shorts_index Video-ID's die al in de Shorts-playlist staan (ID => true).
+ * @param string $api_key      YouTube API-key.
+ * @return array Items uit $uploads die als Short zijn bevestigd.
+ */
+function syc_find_unlisted_upload_shorts( $uploads, $shorts_index, $api_key ) {
+	$map     = syc_get_shorts_classification();
+	$changed = false;
+
+	// Video's in de Shorts-playlist zijn zeker Shorts.
+	foreach ( array_keys( $shorts_index ) as $video_id ) {
+		if ( ! isset( $map[ $video_id ] ) || 1 !== (int) $map[ $video_id ] ) {
+			$map[ $video_id ] = 1;
+			$changed          = true;
+		}
+	}
+
+	$unknown = array();
+	foreach ( $uploads as $item ) {
+		if ( ! isset( $shorts_index[ $item['video_id'] ] ) && ! isset( $map[ $item['video_id'] ] ) ) {
+			$unknown[ $item['video_id'] ] = $item;
+		}
+	}
+
+	if ( ! empty( $unknown ) ) {
+		$details = syc_youtube_api_get(
+			'videos',
+			array(
+				'part'       => 'contentDetails,snippet',
+				'id'         => implode( ',', array_slice( array_keys( $unknown ), 0, 50 ) ),
+				'maxResults' => 50,
+				'key'        => $api_key,
+			)
+		);
+
+		if ( ! is_wp_error( $details ) ) {
+			$checks = 0;
+			foreach ( $details['items'] as $video ) {
+				$video_id = isset( $video['id'] ) ? syc_sanitize_youtube_video_id( (string) $video['id'] ) : '';
+				if ( '' === $video_id || ! isset( $unknown[ $video_id ] ) ) {
+					continue;
+				}
+
+				$live = isset( $video['snippet']['liveBroadcastContent'] ) ? (string) $video['snippet']['liveBroadcastContent'] : 'none';
+				if ( 'none' !== $live ) {
+					// Live of gepland: later opnieuw beoordelen.
+					continue;
+				}
+
+				$seconds = syc_parse_iso8601_duration( isset( $video['contentDetails']['duration'] ) ? $video['contentDetails']['duration'] : '' );
+				if ( $seconds > SYC_SHORTS_MAX_DURATION ) {
+					$map[ $video_id ] = 0;
+					$changed          = true;
+					continue;
+				}
+				if ( $seconds <= 0 || $checks >= SYC_SHORTS_URL_CHECKS_PER_RUN ) {
+					continue;
+				}
+
+				++$checks;
+				$is_short = syc_check_youtube_short_url( $video_id );
+				if ( true === $is_short ) {
+					$map[ $video_id ] = 1;
+					$changed          = true;
+				} elseif ( false === $is_short && $unknown[ $video_id ]['published'] > 0 && $unknown[ $video_id ]['published'] < time() - DAY_IN_SECONDS ) {
+					// Pas na een dag definitief: YouTube classificeert nieuwe uploads soms met vertraging.
+					$map[ $video_id ] = 0;
+					$changed          = true;
+				}
+			}
+		}
+	}
+
+	if ( $changed ) {
+		syc_save_shorts_classification( $map );
+	}
+
+	$found = array();
+	foreach ( $uploads as $item ) {
+		if ( ! isset( $shorts_index[ $item['video_id'] ] ) && isset( $map[ $item['video_id'] ] ) && 1 === (int) $map[ $item['video_id'] ] ) {
+			$found[] = $item;
+		}
+	}
+
+	return $found;
+}
+
+/**
  * Haal Shorts items op via de YouTube Data API en cache het resultaat.
+ *
+ * Combineert de automatische Shorts-playlist (UUSH) met de uploads-playlist
+ * (UU), zodat een nieuwe Short direct verschijnt, ook als YouTube de
+ * Shorts-playlist nog niet heeft bijgewerkt. Mislukt het uploadsdeel, dan
+ * blijft het resultaat gelijk aan alleen de Shorts-playlist.
  *
  * Wordt uitsluitend aangeroepen vanuit {@see syc_refresh_all_feeds()}
  * (WP-Cron of een handmatige refresh in de admin), nooit tijdens het laden
@@ -5047,7 +5349,8 @@ function syc_fetch_and_cache_api_shorts_items() {
 	}
 
 	$playlist_id = syc_get_shorts_playlist_id( $settings['channel_id'] );
-	if ( ! $playlist_id ) {
+	$uploads_id  = syc_get_uploads_playlist_id( $settings['channel_id'] );
+	if ( ! $playlist_id || ! $uploads_id ) {
 		$error = new WP_Error( 'syc_youtube_invalid_channel', __( 'Het kanaal-ID is ongeldig. Gebruik het YouTube-ID dat met UC begint.', 'scientias-youtube-carrousel' ) );
 		syc_update_main_feed_meta( 'error', null, $error, $keys['cache'] );
 		return $error;
@@ -5055,67 +5358,81 @@ function syc_fetch_and_cache_api_shorts_items() {
 
 	$max_results = min( max( 1, absint( $settings['max_items'] ) ), 50 );
 
-	$url = add_query_arg(
+	$data = syc_youtube_api_get(
+		'playlistItems',
 		array(
-			'part'       => 'snippet',
+			'part'       => 'snippet,contentDetails',
 			'playlistId' => $playlist_id,
 			'maxResults' => $max_results,
 			'key'        => $settings['api_key'],
-		),
-		'https://www.googleapis.com/youtube/v3/playlistItems'
-	);
-
-	$response = wp_remote_get(
-		$url,
-		array(
-			'timeout' => SYC_API_REQUEST_TIMEOUT,
 		)
 	);
 
-	if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
-		$error = syc_youtube_error_from_response( $response, 'main' );
-		syc_update_main_feed_meta( 'error', null, $error, $keys['cache'] );
-		return $error;
+	if ( is_wp_error( $data ) ) {
+		// Een kanaal zonder (openbare) Shorts-playlist kan via de uploads nog Shorts hebben.
+		if ( 'syc_youtube_shorts_unavailable' !== $data->get_error_code() ) {
+			syc_update_main_feed_meta( 'error', null, $data, $keys['cache'] );
+			return $data;
+		}
+		$shorts_error = $data;
+		$data         = array( 'items' => array() );
 	}
 
-	$body = wp_remote_retrieve_body( $response );
-	$data = json_decode( $body, true );
-
-	if ( ! is_array( $data ) || ! isset( $data['items'] ) || ! is_array( $data['items'] ) ) {
-		$error = syc_youtube_invalid_response_error();
-		syc_update_main_feed_meta( 'error', null, $error, $keys['cache'] );
-		return $error;
+	$shorts       = syc_parse_youtube_playlist_items( $data['items'] );
+	$shorts_index = array();
+	foreach ( $shorts as $item ) {
+		$shorts_index[ $item['video_id'] ] = true;
 	}
+
+	$uploads = syc_youtube_api_get(
+		'playlistItems',
+		array(
+			'part'       => 'snippet,contentDetails',
+			'playlistId' => $uploads_id,
+			'maxResults' => 50,
+			'key'        => $settings['api_key'],
+		)
+	);
+
+	$extra = array();
+	if ( ! is_wp_error( $uploads ) ) {
+		$recent_uploads = syc_parse_youtube_playlist_items( $uploads['items'] );
+
+		// Bij een volle Shorts-lijst kunnen oudere uploads nooit meer in de feed komen.
+		if ( count( $shorts ) >= $max_results ) {
+			$oldest         = min( wp_list_pluck( $shorts, 'published' ) );
+			$recent_uploads = array_values(
+				array_filter(
+					$recent_uploads,
+					function ( $item ) use ( $oldest ) {
+						return $item['published'] > $oldest;
+					}
+				)
+			);
+		}
+
+		$extra = syc_find_unlisted_upload_shorts( $recent_uploads, $shorts_index, $settings['api_key'] );
+	}
+
+	if ( isset( $shorts_error ) && empty( $extra ) ) {
+		syc_update_main_feed_meta( 'error', null, $shorts_error, $keys['cache'] );
+		return $shorts_error;
+	}
+
+	$merged = array_merge( $extra, $shorts );
+	usort(
+		$merged,
+		function ( $a, $b ) {
+			return $b['published'] - $a['published'];
+		}
+	);
 
 	$items = array();
-
-	foreach ( $data['items'] as $item ) {
-		if ( empty( $item['snippet']['resourceId']['videoId'] ) ) {
-			continue;
-		}
-
-		$video_id = syc_sanitize_youtube_video_id( $item['snippet']['resourceId']['videoId'] );
-		if ( '' === $video_id ) {
-			continue;
-		}
-
-		$title = isset( $item['snippet']['title'] ) ? sanitize_text_field( wp_strip_all_tags( $item['snippet']['title'] ) ) : '';
-		$thumb = '';
-
-		if ( ! empty( $item['snippet']['thumbnails']['maxres']['url'] ) ) {
-			$thumb = $item['snippet']['thumbnails']['maxres']['url'];
-		} elseif ( ! empty( $item['snippet']['thumbnails']['high']['url'] ) ) {
-			$thumb = $item['snippet']['thumbnails']['high']['url'];
-		} elseif ( ! empty( $item['snippet']['thumbnails']['medium']['url'] ) ) {
-			$thumb = $item['snippet']['thumbnails']['medium']['url'];
-		}
-
-		$thumb = '' !== $thumb ? esc_url_raw( $thumb ) : syc_get_youtube_thumbnail_url( $video_id );
-
+	foreach ( array_slice( $merged, 0, $max_results ) as $item ) {
 		$items[] = array(
-			'video_id' => $video_id,
-			'title'    => $title,
-			'thumb'    => $thumb,
+			'video_id' => $item['video_id'],
+			'title'    => $item['title'],
+			'thumb'    => $item['thumb'],
 		);
 	}
 

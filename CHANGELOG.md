@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.0 - 2026-11-19
+
+- The main feed now merges YouTube's automatic Shorts playlist (UUSH) with the channel's uploads playlist (UU), so new Shorts appear immediately even when YouTube updates the Shorts playlist hours later.
+- Uploads not yet in the Shorts playlist count as Shorts when they last at most three minutes and `youtube.com/shorts/<id>` does not redirect to a regular watch page; this check uses no API quota and is stored per video.
+- Live and scheduled videos are skipped; inconclusive checks are retried on a later refresh.
+- Feed items are ordered by video publication date. If the uploads request fails the feed falls back to the Shorts playlist alone.
+- A channel without a public Shorts playlist can still show Shorts found via its uploads.
+- Uninstall removes the new Shorts classification option.
+
 ## 1.5.15 - 2026-11-19
 
 - The video modal now moves keyboard focus to its close button on open, keeps Tab focus inside the dialog, and returns focus to the originating video on close.

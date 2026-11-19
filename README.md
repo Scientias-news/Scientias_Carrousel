@@ -68,7 +68,7 @@ Onder **Feed instellingen** kan een administrator automatische berichten voor ni
 
 De standaardshortcode gebruikt de volgende volgorde:
 
-1. De gecachete Shorts-feed van het ingestelde YouTube-kanaal.
+1. De gecachete Shorts-feed van het ingestelde YouTube-kanaal (Shorts-playlist aangevuld met nieuwe Shorts uit de uploads).
 2. Losse, gepubliceerde video-items uit WordPress wanneer de feed niet beschikbaar of leeg is.
 
 Een benoemde extra carrousel gebruikt deze volgorde:
@@ -128,6 +128,9 @@ Beschikbare attributen:
 ## Videobronnen
 
 - Haalt automatisch Shorts op uit een ingesteld YouTube-kanaal.
+- Combineert de automatische Shorts-playlist van YouTube met de uploadslijst van het kanaal. YouTube werkt de Shorts-playlist soms uren later bij; een nieuwe Short verschijnt daardoor toch direct in de feed.
+- Een upload telt als Short wanneer hij in de Shorts-playlist staat, of wanneer hij maximaal drie minuten duurt én `youtube.com/shorts/<id>` niet doorstuurt naar een gewone videopagina. Die controle kost geen API-quotum en wordt per video opgeslagen.
+- Lukt de controle niet (bijvoorbeeld door een time-out), dan wacht de video tot een volgende verversing of tot hij in de Shorts-playlist verschijnt.
 - Ondersteunt maximaal 50 feeditems.
 - Ondersteunt extra themacarrousels met een eigen shortcodenaam.
 - Een extra carrousel kan een YouTube-playlist gebruiken.
@@ -176,6 +179,7 @@ De standaardauteur wordt in de plugin bepaald met `SYC_DEFAULT_DRAFT_AUTHOR_NAME
 
 - Bezoekersrequests doen nooit rechtstreeks een YouTube API-aanvraag.
 - WP-Cron controleert de feeds iedere vijf minuten.
+- Een verversing van de hoofdfeed kost twee tot drie API-eenheden (Shorts-playlist, uploads en zo nodig videoduur), ruim binnen het standaardquotum van 10.000 per dag.
 - Playlists worden in roterende batches verwerkt om time-outs en overmatig quotagebruik te voorkomen.
 - De actieve cache heeft een looptijd van vijftien minuten.
 - De laatst succesvol ontvangen feed blijft als fallback beschikbaar bij API-fouten.

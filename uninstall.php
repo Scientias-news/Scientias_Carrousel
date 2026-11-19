@@ -42,6 +42,7 @@ function syc_uninstall_current_site() {
 	delete_option( 'syc_pending_playlist_cleanup' );
 	delete_option( 'syc_onboarding_redirect' );
 	delete_option( 'syc_editorial_video_index' );
+	delete_option( 'syc_shorts_classification' );
 	delete_option( 'syc_capability_version' );
 	delete_option( 'syc_cron_activated_at' );
 	delete_option( 'syc_cron_last_run_at' );
